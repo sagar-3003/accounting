@@ -173,8 +173,8 @@ class PurchaseModule:
                 "purchase_id": purchase_id
             }
             
-            # Post to Tally
-            if post_to_tally:
+            # Post to Tally (only if enabled and requested)
+            if post_to_tally and config.TALLY_ENABLED:
                 try:
                     success = self._post_to_tally(
                         date=tally_date,
@@ -196,6 +196,7 @@ class PurchaseModule:
                         self.db.connection.commit()
                 except Exception as e:
                     result["tally_error"] = f"Failed to post to Tally: {str(e)}"
+                    # Continue anyway - data is saved in SQLite
             
             return result
             

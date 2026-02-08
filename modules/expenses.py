@@ -18,6 +18,7 @@ from utils.helpers import (
     parse_date,
     calculate_due_date
 )
+import config
 
 
 class ExpenseModule:
@@ -96,8 +97,8 @@ class ExpenseModule:
                 "status": "pending"
             }
             
-            # Post to Tally as Journal entry (Expense Dr, Creditor Cr)
-            if post_to_tally:
+            # Post to Tally as Journal entry (Expense Dr, Creditor Cr) - only if enabled
+            if post_to_tally and config.TALLY_ENABLED:
                 try:
                     success = self._post_expense_to_tally(
                         date=tally_date,
@@ -115,6 +116,7 @@ class ExpenseModule:
                         self.db.connection.commit()
                 except Exception as e:
                     result["tally_error"] = f"Failed to post to Tally: {str(e)}"
+                    # Continue anyway - data is saved in SQLite
             
             return result
             
