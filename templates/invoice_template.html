@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tax Invoice - {{ invoice_no }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Arial', sans-serif;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #333;
+            padding: 20px;
+        }
+        
+        .invoice-container {
+            max-width: 800px;
+            margin: 0 auto;
+            border: 2px solid #333;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            border-bottom: 2px solid #333;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .header h1 {
+            font-size: 24px;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+        
+        .header .company-name {
+            font-size: 20px;
+            font-weight: bold;
+            color: #34495e;
+            margin-bottom: 5px;
+        }
+        
+        .header .company-details {
+            font-size: 11px;
+            color: #555;
+            line-height: 1.4;
+        }
+        
+        .invoice-info {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+        }
+        
+        .invoice-info-left, .invoice-info-right {
+            width: 48%;
+        }
+        
+        .invoice-info-label {
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        
+        .parties-section {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        
+        .party-box {
+            width: 48%;
+            border: 1px solid #333;
+            padding: 10px;
+            min-height: 100px;
+        }
+        
+        .party-box h3 {
+            font-size: 13px;
+            background-color: #34495e;
+            color: white;
+            padding: 5px;
+            margin: -10px -10px 10px -10px;
+        }
+        
+        .party-detail {
+            margin-bottom: 5px;
+        }
+        
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        
+        .items-table th {
+            background-color: #34495e;
+            color: white;
+            padding: 8px;
+            text-align: left;
+            font-size: 11px;
+            border: 1px solid #333;
+        }
+        
+        .items-table td {
+            padding: 8px;
+            border: 1px solid #333;
+            font-size: 11px;
+        }
+        
+        .items-table tbody tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+        
+        .text-right {
+            text-align: right;
+        }
+        
+        .text-center {
+            text-align: center;
+        }
+        
+        .totals-section {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 20px;
+        }
+        
+        .totals-table {
+            width: 350px;
+            border-collapse: collapse;
+        }
+        
+        .totals-table td {
+            padding: 6px 10px;
+            border: 1px solid #333;
+            font-size: 11px;
+        }
+        
+        .totals-table .label-col {
+            font-weight: bold;
+            background-color: #f8f9fa;
+            width: 180px;
+        }
+        
+        .totals-table .amount-col {
+            text-align: right;
+            width: 170px;
+        }
+        
+        .totals-table .grand-total {
+            background-color: #34495e;
+            color: white;
+            font-weight: bold;
+            font-size: 13px;
+        }
+        
+        .amount-in-words {
+            border: 1px solid #333;
+            padding: 10px;
+            margin-bottom: 20px;
+            background-color: #f8f9fa;
+        }
+        
+        .amount-in-words strong {
+            color: #2c3e50;
+        }
+        
+        .bank-details {
+            border: 1px solid #333;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .bank-details h3 {
+            font-size: 13px;
+            color: #2c3e50;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 5px;
+        }
+        
+        .bank-detail-row {
+            display: flex;
+            margin-bottom: 5px;
+        }
+        
+        .bank-detail-label {
+            font-weight: bold;
+            width: 150px;
+        }
+        
+        .terms-conditions {
+            border: 1px solid #333;
+            padding: 10px;
+            margin-bottom: 20px;
+            font-size: 10px;
+        }
+        
+        .terms-conditions h3 {
+            font-size: 12px;
+            color: #2c3e50;
+            margin-bottom: 8px;
+        }
+        
+        .terms-conditions ul {
+            margin-left: 20px;
+        }
+        
+        .terms-conditions li {
+            margin-bottom: 5px;
+        }
+        
+        .signature-section {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 40px;
+        }
+        
+        .signature-box {
+            width: 45%;
+            text-align: center;
+        }
+        
+        .signature-line {
+            border-top: 1px solid #333;
+            margin-top: 60px;
+            padding-top: 10px;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 20px;
+            padding-top: 10px;
+            border-top: 1px solid #ddd;
+            font-size: 10px;
+            color: #777;
+        }
+        
+        @media print {
+            body {
+                padding: 0;
+            }
+            
+            .invoice-container {
+                border: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="invoice-container">
+        <!-- Header -->
+        <div class="header">
+            <h1>TAX INVOICE</h1>
+            <div class="company-name">{{ company_name }}</div>
+            <div class="company-details">
+                {{ company_address }}<br>
+                GSTIN: {{ company_gstin }} | PAN: {{ company_pan }}<br>
+                Email: {{ company_email }} | Phone: {{ company_phone }}
+            </div>
+        </div>
+        
+        <!-- Invoice Info -->
+        <div class="invoice-info">
+            <div class="invoice-info-left">
+                <div><span class="invoice-info-label">Invoice No:</span> {{ invoice_no }}</div>
+                <div><span class="invoice-info-label">Invoice Date:</span> {{ date }}</div>
+            </div>
+            <div class="invoice-info-right">
+                <div><span class="invoice-info-label">Place of Supply:</span> {{ place_of_supply|default('N/A') }}</div>
+                <div><span class="invoice-info-label">Reverse Charge:</span> {{ reverse_charge|default('No') }}</div>
+            </div>
+        </div>
+        
+        <!-- Parties Section -->
+        <div class="parties-section">
+            <!-- Bill From (Company) -->
+            <div class="party-box">
+                <h3>Bill From (Seller)</h3>
+                <div class="party-detail"><strong>{{ company_name }}</strong></div>
+                <div class="party-detail">{{ company_address }}</div>
+                <div class="party-detail">GSTIN: {{ company_gstin }}</div>
+                <div class="party-detail">State: {{ company_state|default('N/A') }}</div>
+            </div>
+            
+            <!-- Bill To (Customer) -->
+            <div class="party-box">
+                <h3>Bill To (Buyer)</h3>
+                <div class="party-detail"><strong>{{ customer_name }}</strong></div>
+                <div class="party-detail">{{ customer_address|default('Address not provided') }}</div>
+                {% if customer_gstin %}
+                <div class="party-detail">GSTIN: {{ customer_gstin }}</div>
+                {% endif %}
+                <div class="party-detail">State: {{ customer_state|default('N/A') }}</div>
+            </div>
+        </div>
+        
+        <!-- Items Table -->
+        <table class="items-table">
+            <thead>
+                <tr>
+                    <th class="text-center" style="width: 40px;">S.No</th>
+                    <th>Description of Goods/Services</th>
+                    <th class="text-center" style="width: 80px;">HSN/SAC</th>
+                    <th class="text-center" style="width: 60px;">Qty</th>
+                    <th class="text-center" style="width: 50px;">Unit</th>
+                    <th class="text-right" style="width: 80px;">Rate (₹)</th>
+                    <th class="text-right" style="width: 100px;">Amount (₹)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                <tr>
+                    <td class="text-center">{{ loop.index }}</td>
+                    <td>{{ item.name }}</td>
+                    <td class="text-center">{{ item.hsn|default('N/A') }}</td>
+                    <td class="text-center">{{ item.quantity }}</td>
+                    <td class="text-center">{{ item.unit|default('Pcs') }}</td>
+                    <td class="text-right">{{ "%.2f"|format(item.rate) }}</td>
+                    <td class="text-right">{{ "%.2f"|format(item.amount) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        
+        <!-- Totals Section -->
+        <div class="totals-section">
+            <table class="totals-table">
+                <tr>
+                    <td class="label-col">Subtotal (Taxable Value)</td>
+                    <td class="amount-col">₹ {{ "%.2f"|format(subtotal) }}</td>
+                </tr>
+                {% if cgst > 0 %}
+                <tr>
+                    <td class="label-col">CGST</td>
+                    <td class="amount-col">₹ {{ "%.2f"|format(cgst) }}</td>
+                </tr>
+                {% endif %}
+                {% if sgst > 0 %}
+                <tr>
+                    <td class="label-col">SGST</td>
+                    <td class="amount-col">₹ {{ "%.2f"|format(sgst) }}</td>
+                </tr>
+                {% endif %}
+                {% if igst > 0 %}
+                <tr>
+                    <td class="label-col">IGST</td>
+                    <td class="amount-col">₹ {{ "%.2f"|format(igst) }}</td>
+                </tr>
+                {% endif %}
+                <tr>
+                    <td class="label-col">Round Off</td>
+                    <td class="amount-col">₹ {{ "%.2f"|format(round_off|default(0)) }}</td>
+                </tr>
+                <tr class="grand-total">
+                    <td class="label-col">GRAND TOTAL</td>
+                    <td class="amount-col">₹ {{ "%.2f"|format(total) }}</td>
+                </tr>
+            </table>
+        </div>
+        
+        <!-- Amount in Words -->
+        <div class="amount-in-words">
+            <strong>Amount in Words:</strong> {{ amount_in_words }}
+        </div>
+        
+        <!-- Bank Details -->
+        <div class="bank-details">
+            <h3>Bank Details for Payment</h3>
+            <div class="bank-detail-row">
+                <div class="bank-detail-label">Bank Name:</div>
+                <div>{{ bank_name|default('N/A') }}</div>
+            </div>
+            <div class="bank-detail-row">
+                <div class="bank-detail-label">Account Number:</div>
+                <div>{{ bank_account_no|default('N/A') }}</div>
+            </div>
+            <div class="bank-detail-row">
+                <div class="bank-detail-label">IFSC Code:</div>
+                <div>{{ bank_ifsc|default('N/A') }}</div>
+            </div>
+            <div class="bank-detail-row">
+                <div class="bank-detail-label">Branch:</div>
+                <div>{{ bank_branch|default('N/A') }}</div>
+            </div>
+        </div>
+        
+        <!-- Terms & Conditions -->
+        <div class="terms-conditions">
+            <h3>Terms & Conditions</h3>
+            <ul>
+                <li>Payment due within {{ payment_terms|default('30') }} days from invoice date</li>
+                <li>Interest @ 18% p.a. will be charged on delayed payments</li>
+                <li>Goods once sold will not be taken back or exchanged</li>
+                <li>All disputes subject to {{ jurisdiction|default('Mumbai') }} jurisdiction only</li>
+                <li>This is a computer-generated invoice and does not require a physical signature</li>
+            </ul>
+        </div>
+        
+        <!-- Signature Section -->
+        <div class="signature-section">
+            <div class="signature-box">
+                <div>Customer's Signature</div>
+                <div class="signature-line">Authorized Signatory</div>
+            </div>
+            <div class="signature-box">
+                <div>For {{ company_name }}</div>
+                <div class="signature-line">Authorized Signatory</div>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="footer">
+            This is a system-generated invoice | Thank you for your business!
+        </div>
+    </div>
+</body>
+</html>
