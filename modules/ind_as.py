@@ -755,3 +755,28 @@ def map_gaap_to_ind_as(as_number: str) -> Optional[str]:
         Corresponding Ind AS or None
     """
     return GAAP_TO_IND_AS_MAPPING.get(as_number)
+
+
+class IndASModule:
+    """Wrapper class for Ind AS module to provide object-oriented interface"""
+    
+    def __init__(self):
+        """Initialize Ind AS module"""
+        pass
+    
+    def search_standards(self, keyword: str) -> List[Dict]:
+        """Search Ind AS standards by keyword"""
+        return search_ind_as(keyword)
+    
+    def get_standard_details(self, number: str) -> Optional[Dict]:
+        """Get Ind AS standard by number"""
+        return get_ind_as_standard(number)
+    
+    def get_all_standards(self) -> List[Dict]:
+        """Get all Ind AS standards as a list"""
+        return [std for std in IND_AS_STANDARDS.values()]
+    
+    def map_gaap_to_ind_as(self, as_number: str) -> Optional[str]:
+        """Map old AS (Indian GAAP) to Ind AS"""
+        return map_gaap_to_ind_as(as_number)
+

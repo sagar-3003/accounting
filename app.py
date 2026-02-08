@@ -8,7 +8,8 @@ from datetime import datetime, date
 import pandas as pd
 
 # Import configuration and core modules
-from config import Config, SIDEBAR_PAGES, COMPANY_INFO, FINANCIAL_YEAR, DEFAULT_GST_STATE
+import config
+from config import SIDEBAR_PAGES, COMPANY_INFO, FINANCIAL_YEAR, DEFAULT_GST_STATE
 from database.db import db
 from tally.connection import tally_connector
 from utils.helpers import format_indian_currency, format_date_indian, get_financial_year, get_quarter
@@ -16,7 +17,7 @@ from utils.helpers import format_indian_currency, format_date_indian, get_financ
 # Import module managers
 from modules.sales import SalesModule
 from modules.purchase import PurchaseModule
-from modules.expenses import ExpensesModule
+from modules.expenses import ExpenseModule
 from modules.bank_statement import BankStatementModule
 from modules.tds import TDSModule
 from modules.gst import GSTModule
@@ -97,7 +98,7 @@ def get_modules():
         st.session_state.modules = {
             'sales': SalesModule(),
             'purchase': PurchaseModule(),
-            'expenses': ExpensesModule(),
+            'expenses': ExpenseModule(),
             'bank_statement': BankStatementModule(),
             'tds': TDSModule(),
             'gst': GSTModule(),
