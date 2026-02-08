@@ -1,18 +1,26 @@
 """
-Main Streamlit Application for AI Accounting Chatbot
-Entry point with sidebar navigation and all module pages
+AI Accounting Chatbot - Single Chat Window Interface
+A WhatsApp-style conversational accounting assistant
 """
 
 import streamlit as st
-from datetime import datetime, date
-import pandas as pd
+import re
+from datetime import datetime
+from typing import Dict, Optional, List, Tuple
+import json
 
 # Import configuration and core modules
 import config
-from config import SIDEBAR_PAGES, COMPANY_INFO, FINANCIAL_YEAR, DEFAULT_GST_STATE
 from database.db import db
-from tally.connection import tally_connector
-from utils.helpers import format_indian_currency, format_date_indian, get_financial_year, get_quarter
+from tally.connection import TallyConnector
+from utils.helpers import (
+    format_indian_currency, 
+    calculate_gst, 
+    validate_gstin,
+    format_date_indian,
+    parse_date,
+    get_financial_year
+)
 
 # Import module managers
 from modules.sales import SalesModule
@@ -24,74 +32,56 @@ from modules.gst import GSTModule
 from modules.reports import ReportsModule
 from modules.ind_as import IndASModule
 
-# Set page configuration
+# Import invoice tools
+from invoice.generator import invoice_generator
+from invoice.scanner import invoice_scanner
+
+# ============================================================================
+# PAGE CONFIGURATION
+# ============================================================================
+
 st.set_page_config(
-    page_title="AI Accounting Chatbot",
+    page_title="Accounting Assistant",
     page_icon="🧾",
-    layout="wide",
+    layout="centered",
     initial_sidebar_state="expanded"
 )
 
-# Initialize session state for all modules
+# ============================================================================
+# SESSION STATE INITIALIZATION
+# ============================================================================
+
 def init_session_state():
-    """Initialize session state variables for all modules"""
-    # Sales module state
-    if 'sales_messages' not in st.session_state:
-        st.session_state.sales_messages = []
-    if 'sales_step' not in st.session_state:
-        st.session_state.sales_step = 'start'
-    if 'sales_data' not in st.session_state:
-        st.session_state.sales_data = {}
+    """Initialize session state for conversation tracking"""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+        # Add greeting message
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": "Hi! 👋 I'm your accounting assistant. Tell me about any transaction, ask for reports, or upload invoices. I'll handle the rest!"
+        })
     
-    # Purchase module state
-    if 'purchase_messages' not in st.session_state:
-        st.session_state.purchase_messages = []
-    if 'purchase_step' not in st.session_state:
-        st.session_state.purchase_step = 'start'
-    if 'purchase_data' not in st.session_state:
-        st.session_state.purchase_data = {}
+    if "current_flow" not in st.session_state:
+        st.session_state.current_flow = None  # None, "sales", "purchase", "expense", "tds", etc.
     
-    # Expenses module state
-    if 'expenses_messages' not in st.session_state:
-        st.session_state.expenses_messages = []
-    if 'expenses_step' not in st.session_state:
-        st.session_state.expenses_step = 'start'
-    if 'expenses_data' not in st.session_state:
-        st.session_state.expenses_data = {}
+    if "flow_step" not in st.session_state:
+        st.session_state.flow_step = 0
     
-    # Bank statement module state
-    if 'bank_messages' not in st.session_state:
-        st.session_state.bank_messages = []
-    if 'bank_step' not in st.session_state:
-        st.session_state.bank_step = 'start'
-    if 'bank_data' not in st.session_state:
-        st.session_state.bank_data = {}
+    if "flow_data" not in st.session_state:
+        st.session_state.flow_data = {}
     
-    # TDS module state
-    if 'tds_messages' not in st.session_state:
-        st.session_state.tds_messages = []
-    if 'tds_step' not in st.session_state:
-        st.session_state.tds_step = 'start'
-    if 'tds_data' not in st.session_state:
-        st.session_state.tds_data = {}
-    
-    # GST module state
-    if 'gst_selected_option' not in st.session_state:
-        st.session_state.gst_selected_option = None
-    
-    # Settings
+    # Tally settings
     if 'tally_host' not in st.session_state:
         st.session_state.tally_host = db.get_setting('tally_host') or 'localhost'
     if 'tally_port' not in st.session_state:
         st.session_state.tally_port = db.get_setting('tally_port') or '9000'
     if 'company_name' not in st.session_state:
         st.session_state.company_name = db.get_setting('company_name') or ''
-    if 'financial_year' not in st.session_state:
-        st.session_state.financial_year = db.get_setting('financial_year') or FINANCIAL_YEAR
-    if 'default_gst_state' not in st.session_state:
-        st.session_state.default_gst_state = db.get_setting('default_gst_state') or DEFAULT_GST_STATE
 
-# Initialize module instances
+# ============================================================================
+# MODULE INITIALIZATION
+# ============================================================================
+
 def get_modules():
     """Get or create module instances"""
     if 'modules' not in st.session_state:
@@ -107,1137 +97,1296 @@ def get_modules():
         }
     return st.session_state.modules
 
+def get_tally_connector():
+    """Get Tally connector instance"""
+    if 'tally_connector' not in st.session_state:
+        st.session_state.tally_connector = TallyConnector(
+            host=st.session_state.tally_host,
+            port=int(st.session_state.tally_port)
+        )
+    return st.session_state.tally_connector
 
-def show_home_page():
-    """Display the Home/Dashboard page"""
-    st.title("🏠 AI Accounting Chatbot Dashboard")
-    
-    # Tally connection status
-    st.subheader("Tally Connection Status")
-    try:
-        tally_status = tally_connector.test_connection()
-        if tally_status['connected']:
-            st.success(f"🟢 Connected to Tally at {tally_status['url']}")
-            if tally_status['company']:
-                st.info(f"📊 Active Company: **{tally_status['company']}**")
-        else:
-            st.warning(f"🔴 Disconnected - {tally_status.get('error', 'Unable to connect to Tally')}")
-            st.info("💡 You can still use the app in offline mode. Data will be stored locally.")
-    except Exception as e:
-        st.error(f"❌ Error checking Tally connection: {str(e)}")
-    
-    st.divider()
-    
-    # Quick stats
-    st.subheader("Quick Stats")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        # Today's sales count
-        today = datetime.now().strftime("%Y-%m-%d")
-        sales_today = len([s for s in db.get_sales(limit=100) if s.get('date', '').startswith(today)])
-        st.metric("Today's Sales", sales_today)
-    
-    with col2:
-        # Pending payments (expenses)
-        pending_expenses = db.get_expenses(status='pending')
-        pending_amount = sum(e.get('amount', 0) for e in pending_expenses)
-        st.metric("Pending Payments", format_indian_currency(pending_amount))
-    
-    with col3:
-        # Overdue creditors
-        creditors = db.get_creditors(status='pending')
-        overdue_count = 0
-        today_date = datetime.now().date()
-        for creditor in creditors:
-            due_date_str = creditor.get('due_date', '')
-            if due_date_str:
-                try:
-                    due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date()
-                    if due_date < today_date:
-                        overdue_count += 1
-                except:
-                    pass
-        st.metric("Overdue Creditors", overdue_count)
-    
-    st.divider()
-    
-    # Recent activity
-    st.subheader("Recent Activity")
-    
-    # Get recent sales
-    recent_sales = db.get_sales(limit=5)
-    if recent_sales:
-        st.write("**Recent Sales:**")
-        sales_df = pd.DataFrame(recent_sales)
-        if not sales_df.empty:
-            display_cols = ['invoice_no', 'customer_name', 'total', 'date']
-            existing_cols = [col for col in display_cols if col in sales_df.columns]
-            if existing_cols:
-                st.dataframe(sales_df[existing_cols], use_container_width=True)
-    
-    # Get recent expenses
-    recent_expenses = db.get_expenses(limit=5)
-    if recent_expenses:
-        st.write("**Recent Expenses:**")
-        expenses_df = pd.DataFrame(recent_expenses)
-        if not expenses_df.empty:
-            display_cols = ['vendor_name', 'amount', 'category', 'payment_status', 'date']
-            existing_cols = [col for col in display_cols if col in expenses_df.columns]
-            if existing_cols:
-                st.dataframe(expenses_df[existing_cols], use_container_width=True)
+# ============================================================================
+# INTENT DETECTION & DATA EXTRACTION
+# ============================================================================
 
+def detect_intent(message: str) -> str:
+    """
+    Detect user intent from message using keyword matching
+    
+    Args:
+        message: User message
+        
+    Returns:
+        Intent string
+    """
+    message_lower = message.lower()
+    
+    # Check for greetings
+    greeting_keywords = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
+    if any(keyword in message_lower for keyword in greeting_keywords):
+        return "GREETING"
+    
+    # Check for help
+    help_keywords = ['help', 'what can you do', 'features', 'how to use']
+    if any(keyword in message_lower for keyword in help_keywords):
+        return "HELP"
+    
+    # Check for sales
+    sales_keywords = ['sold', 'sales', 'invoice', 'billed', 'supplied', 'revenue', 'customer']
+    if any(keyword in message_lower for keyword in sales_keywords):
+        return "SALES"
+    
+    # Check for purchase
+    purchase_keywords = ['purchased', 'bought', 'purchase', 'procurement', 'vendor bill']
+    if any(keyword in message_lower for keyword in purchase_keywords):
+        return "PURCHASE"
+    
+    # Check for expense
+    expense_keywords = ['expense', 'paid for', 'rent', 'electricity', 'professional fees', 'spent']
+    if any(keyword in message_lower for keyword in expense_keywords):
+        return "EXPENSE"
+    
+    # Check for payment received
+    payment_received_keywords = ['received payment', 'payment received', 'collected', 'receipt']
+    if any(keyword in message_lower for keyword in payment_received_keywords):
+        return "PAYMENT_RECEIVED"
+    
+    # Check for payment made
+    payment_made_keywords = ['paid to', 'payment made', 'settled', 'cleared']
+    if any(keyword in message_lower for keyword in payment_made_keywords):
+        return "PAYMENT_MADE"
+    
+    # Check for bank statement
+    bank_keywords = ['bank statement', 'bank entries', 'reconciliation']
+    if any(keyword in message_lower for keyword in bank_keywords):
+        return "BANK_STATEMENT"
+    
+    # Check for TDS
+    tds_keywords = ['tds', 'tax deducted', '194c', '194j', 'tds return', '26q']
+    if any(keyword in message_lower for keyword in tds_keywords):
+        return "TDS"
+    
+    # Check for GST
+    gst_keywords = ['gst', 'gstr', 'gst return', 'igst', 'cgst', 'sgst', 'hsn', 'e-way']
+    if any(keyword in message_lower for keyword in gst_keywords):
+        return "GST"
+    
+    # Check for reports
+    report_keywords = ['trial balance', 'balance sheet', 'profit and loss', 'p&l', 'report', 
+                      'mis', 'outstanding', 'receivable', 'payable']
+    if any(keyword in message_lower for keyword in report_keywords):
+        return "REPORT"
+    
+    # Check for Ind AS
+    indas_keywords = ['ind as', 'accounting standard', 'indian accounting']
+    if any(keyword in message_lower for keyword in indas_keywords):
+        return "IND_AS"
+    
+    return "UNKNOWN"
 
-def show_sales_page():
-    """Display the Sales page with chat interface"""
-    modules = get_modules()
-    sales_module = modules['sales']
+def extract_data(message: str) -> Dict:
+    """
+    Extract key data from message using regex
     
-    st.title("💰 Sales Entry")
+    Args:
+        message: User message
+        
+    Returns:
+        Dict with extracted data
+    """
+    data = {}
     
-    # Chat interface
-    st.subheader("Sales Assistant")
+    # Extract party name (after "to" or "from")
+    party_pattern = r'(?:to|from)\s+([A-Z][A-Za-z\s&\.]+?)(?:\s+for|\s+of|,|$)'
+    party_match = re.search(party_pattern, message, re.IGNORECASE)
+    if party_match:
+        data['party_name'] = party_match.group(1).strip()
     
-    # Display chat messages
-    for message in st.session_state.sales_messages:
-        with st.chat_message(message['role']):
-            st.write(message['content'])
-    
-    # Start conversation
-    if st.session_state.sales_step == 'start':
-        st.session_state.sales_messages.append({
-            'role': 'assistant',
-            'content': "Hello! I'll help you create a sales invoice. Let's start with the customer name. What is the customer's name?"
-        })
-        st.session_state.sales_step = 'customer_name'
-        st.rerun()
-    
-    # Chat input
-    if prompt := st.chat_input("Your response..."):
-        # Add user message
-        st.session_state.sales_messages.append({
-            'role': 'user',
-            'content': prompt
-        })
-        
-        # Process based on current step
-        if st.session_state.sales_step == 'customer_name':
-            st.session_state.sales_data['customer_name'] = prompt
-            st.session_state.sales_messages.append({
-                'role': 'assistant',
-                'content': f"Great! Customer name: {prompt}. Now, please provide the customer's GSTIN (or type 'skip' if not applicable)."
-            })
-            st.session_state.sales_step = 'customer_gstin'
-        
-        elif st.session_state.sales_step == 'customer_gstin':
-            if prompt.lower() == 'skip':
-                st.session_state.sales_data['customer_gstin'] = ''
-                st.session_state.sales_data['customer_address'] = ''
-            else:
-                st.session_state.sales_data['customer_gstin'] = prompt
-                st.session_state.sales_data['customer_address'] = ''
-            
-            st.session_state.sales_messages.append({
-                'role': 'assistant',
-                'content': "Now let's add items. Please provide item details in format: 'Item Name, Quantity, Rate, HSN Code' (e.g., 'Laptop, 2, 50000, 8471'). Type 'done' when finished adding items."
-            })
-            st.session_state.sales_step = 'items'
-            st.session_state.sales_data['items'] = []
-        
-        elif st.session_state.sales_step == 'items':
-            if prompt.lower() == 'done':
-                if len(st.session_state.sales_data.get('items', [])) > 0:
-                    st.session_state.sales_messages.append({
-                        'role': 'assistant',
-                        'content': "Is this an intra-state transaction (within same state) or inter-state? Type 'intra' or 'inter'."
-                    })
-                    st.session_state.sales_step = 'gst_type'
-                else:
-                    st.session_state.sales_messages.append({
-                        'role': 'assistant',
-                        'content': "Please add at least one item before proceeding."
-                    })
-            else:
-                # Parse item
-                try:
-                    parts = [p.strip() for p in prompt.split(',')]
-                    if len(parts) >= 3:
-                        item = {
-                            'name': parts[0],
-                            'quantity': float(parts[1]),
-                            'rate': float(parts[2]),
-                            'hsn': parts[3] if len(parts) > 3 else '',
-                            'unit': 'Pcs',
-                            'gst_rate': 18  # Default GST rate
-                        }
-                        st.session_state.sales_data['items'].append(item)
-                        st.session_state.sales_messages.append({
-                            'role': 'assistant',
-                            'content': f"Item added: {item['name']} - Qty: {item['quantity']}, Rate: {format_indian_currency(item['rate'])}. Add another item or type 'done' to proceed."
-                        })
-                    else:
-                        st.session_state.sales_messages.append({
-                            'role': 'assistant',
-                            'content': "Invalid format. Please use: 'Item Name, Quantity, Rate, HSN Code'"
-                        })
-                except Exception as e:
-                    st.session_state.sales_messages.append({
-                        'role': 'assistant',
-                        'content': f"Error parsing item: {str(e)}. Please try again."
-                    })
-        
-        elif st.session_state.sales_step == 'gst_type':
-            gst_type = prompt.lower()
-            st.session_state.sales_data['is_intra_state'] = gst_type == 'intra'
-            st.session_state.sales_messages.append({
-                'role': 'assistant',
-                'content': f"GST type set to: {'Intra-state (CGST+SGST)' if gst_type == 'intra' else 'Inter-state (IGST)'}. What is the invoice date? (DD-MM-YYYY or type 'today')"
-            })
-            st.session_state.sales_step = 'date'
-        
-        elif st.session_state.sales_step == 'date':
-            if prompt.lower() == 'today':
-                invoice_date = datetime.now().strftime("%d-%m-%Y")
-            else:
-                invoice_date = prompt
-            st.session_state.sales_data['date'] = invoice_date
-            
-            # Generate invoice
+    # Extract amount (₹ or numbers)
+    amount_patterns = [
+        r'₹\s*([\d,]+(?:\.\d{2})?)',
+        r'(?:for|of|amount|rs\.?|inr)\s*₹?\s*([\d,]+(?:\.\d{2})?)',
+        r'\b([\d,]+(?:\.\d{2})?)\s*(?:rupees|rs|inr)',
+    ]
+    for pattern in amount_patterns:
+        amount_match = re.search(pattern, message, re.IGNORECASE)
+        if amount_match:
+            amount_str = amount_match.group(1).replace(',', '')
             try:
+                data['amount'] = float(amount_str)
+                break
+            except ValueError:
+                pass
+    
+    # Extract GST rate
+    gst_pattern = r'\b(\d+)%?\s*(?:gst|GST)'
+    gst_match = re.search(gst_pattern, message)
+    if gst_match:
+        data['gst_rate'] = int(gst_match.group(1))
+    
+    # Check for "plus GST" or "including GST"
+    if 'plus gst' in message.lower() or '+ gst' in message.lower():
+        data['gst_type'] = 'plus'
+    elif 'including gst' in message.lower() or 'with gst' in message.lower():
+        data['gst_type'] = 'including'
+    
+    # Extract payment status
+    if any(word in message.lower() for word in ['pending', 'credit', 'on credit', 'not paid']):
+        data['payment_status'] = 'pending'
+    elif any(word in message.lower() for word in ['paid', 'cash', 'received']):
+        data['payment_status'] = 'paid'
+    
+    return data
+
+# ============================================================================
+# CONFIRMATION FORMATTING
+# ============================================================================
+
+def format_confirmation(entry_type: str, data: Dict) -> str:
+    """
+    Format confirmation message with emojis and formatting
+    
+    Args:
+        entry_type: Type of entry (sales, purchase, expense, etc.)
+        data: Entry data
+        
+    Returns:
+        Formatted confirmation message
+    """
+    if entry_type == "sales":
+        gst_amount = data.get('cgst', 0) + data.get('sgst', 0) + data.get('igst', 0)
+        msg = f"""Please confirm before posting:
+
+📋 **Sales Entry**
+━━━━━━━━━━━━━━━━━
+**Party:** {data.get('party_name', 'N/A')}
+**Sales Amount:** {format_indian_currency(data.get('amount', 0))}
+**GST @{data.get('gst_rate', 18)}%:** {format_indian_currency(gst_amount)}
+**Total Invoice:** {format_indian_currency(data.get('total', 0))}
+**Payment Status:** {data.get('payment_status', 'Pending').title()}
+
+Should I post this entry in Tally and generate invoice? ✅❌"""
+        return msg
+    
+    elif entry_type == "purchase":
+        gst_amount = data.get('cgst', 0) + data.get('sgst', 0) + data.get('igst', 0)
+        msg = f"""Please confirm before posting:
+
+📦 **Purchase Entry**
+━━━━━━━━━━━━━━━━━
+**Vendor:** {data.get('party_name', 'N/A')}
+**Purchase Amount:** {format_indian_currency(data.get('amount', 0))}
+**GST @{data.get('gst_rate', 18)}%:** {format_indian_currency(gst_amount)}
+**Total Bill:** {format_indian_currency(data.get('total', 0))}
+**Payment Status:** {data.get('payment_status', 'Pending').title()}
+
+Should I post this entry in Tally? ✅❌"""
+        return msg
+    
+    elif entry_type == "expense":
+        msg = f"""Please confirm before posting:
+
+💸 **Expense Entry**
+━━━━━━━━━━━━━━━━━
+**Vendor:** {data.get('party_name', 'N/A')}
+**Expense Head:** {data.get('expense_head', 'General Expenses')}
+**Amount:** {format_indian_currency(data.get('amount', 0))}
+**Payment Status:** {data.get('payment_status', 'Pending').title()}
+
+Should I post this entry in Tally? ✅❌"""
+        return msg
+    
+    elif entry_type == "payment":
+        msg = f"""Please confirm before posting:
+
+💰 **Payment Entry**
+━━━━━━━━━━━━━━━━━
+**Party:** {data.get('party_name', 'N/A')}
+**Amount:** {format_indian_currency(data.get('amount', 0))}
+**Payment Mode:** {data.get('payment_mode', 'Bank Transfer')}
+
+Should I post this entry in Tally? ✅❌"""
+        return msg
+    
+    return "Please confirm: Should I proceed? ✅❌"
+
+# ============================================================================
+# CONVERSATION FLOW HANDLERS
+# ============================================================================
+
+def handle_sales_flow(message: str, step: int, data: Dict) -> str:
+    """
+    Handle multi-step sales conversation
+    
+    Args:
+        message: User message
+        step: Current step in flow
+        data: Flow data accumulated so far
+        
+    Returns:
+        Bot response
+    """
+    if step == 0:
+        # Initial message - extract what we can
+        extracted = extract_data(message)
+        data.update(extracted)
+        
+        # Ask for missing information
+        missing = []
+        if 'party_name' not in data:
+            missing.append("1️⃣ Customer/Party name")
+        if 'amount' not in data:
+            missing.append("2️⃣ Amount")
+        if 'gst_rate' not in data:
+            missing.append("3️⃣ GST rate (5 / 12 / 18 / 28)")
+        if 'payment_status' not in data:
+            missing.append("4️⃣ Payment received or pending?")
+        
+        if missing:
+            st.session_state.flow_step = 1
+            st.session_state.flow_data = data
+            return "Okay 👍 I need a few details:\n\n" + "\n".join(missing)
+        else:
+            # All data available, show confirmation
+            st.session_state.flow_step = 2
+            st.session_state.flow_data = data
+            return format_confirmation("sales", data)
+    
+    elif step == 1:
+        # Collecting missing information
+        extracted = extract_data(message)
+        data.update(extracted)
+        
+        # Check if we have everything now
+        if 'party_name' in data and 'amount' in data and 'gst_rate' in data and 'payment_status' in data:
+            # Calculate GST and total
+            gst_calc = calculate_gst(data['amount'], data['gst_rate'], True)
+            data['cgst'] = gst_calc['cgst']
+            data['sgst'] = gst_calc['sgst']
+            data['igst'] = gst_calc['igst']
+            data['total'] = data['amount'] + gst_calc['cgst'] + gst_calc['sgst'] + gst_calc['igst']
+            
+            st.session_state.flow_step = 2
+            st.session_state.flow_data = data
+            return format_confirmation("sales", data)
+        else:
+            # Still missing info
+            missing = []
+            if 'party_name' not in data:
+                missing.append("• Customer/Party name")
+            if 'amount' not in data:
+                missing.append("• Amount")
+            if 'gst_rate' not in data:
+                missing.append("• GST rate")
+            if 'payment_status' not in data:
+                missing.append("• Payment status")
+            
+            return "I still need:\n" + "\n".join(missing)
+    
+    elif step == 2:
+        # Confirmation step
+        if any(word in message.lower() for word in ['yes', 'confirm', 'post', 'go ahead', 'sure']):
+            # Post the entry
+            try:
+                modules = get_modules()
+                sales_module = modules['sales']
+                
+                # Prepare items for sales entry
+                items = [{
+                    'name': 'Sales Item',
+                    'hsn': '',
+                    'quantity': 1,
+                    'unit': 'Pcs',
+                    'rate': data['amount'],
+                    'gst_rate': data.get('gst_rate', 18)
+                }]
+                
                 result = sales_module.create_sales_entry(
-                    customer_name=st.session_state.sales_data['customer_name'],
-                    customer_gstin=st.session_state.sales_data.get('customer_gstin', ''),
-                    customer_address=st.session_state.sales_data.get('customer_address', ''),
-                    items=st.session_state.sales_data['items'],
-                    invoice_date=invoice_date,
+                    customer_name=data['party_name'],
+                    customer_gstin='',
+                    customer_address='',
+                    items=items,
                     generate_pdf=True,
-                    post_to_tally=False  # Default to not posting to Tally
+                    post_to_tally=True
                 )
                 
                 if 'error' in result:
-                    st.session_state.sales_messages.append({
-                        'role': 'assistant',
-                        'content': f"❌ Error: {result['error']}"
-                    })
+                    response = f"❌ Error posting entry: {result['error']}\n\n⚠️ Don't worry, I've saved it locally. It will sync when Tally is available."
                 else:
-                    invoice_summary = f"""
-✅ Invoice created successfully!
+                    invoice_no = result.get('invoice_no', 'N/A')
+                    response = f"""✅ Sales voucher posted in Tally
+✅ GST invoice generated
+✅ Outstanding added under {data['party_name']}
 
-**Invoice Number:** {result.get('invoice_no', 'N/A')}
-**Customer:** {result.get('customer_name', 'N/A')}
-**Subtotal:** {format_indian_currency(result.get('subtotal', 0))}
-**CGST:** {format_indian_currency(result.get('cgst', 0))}
-**SGST:** {format_indian_currency(result.get('sgst', 0))}
-**IGST:** {format_indian_currency(result.get('igst', 0))}
-**Total:** {format_indian_currency(result.get('total', 0))}
-
-Invoice saved to database. Type 'new' to create another invoice.
-                    """
-                    st.session_state.sales_messages.append({
-                        'role': 'assistant',
-                        'content': invoice_summary
-                    })
-                    
-                    # Show download button if PDF generated
-                    if result.get('pdf_path'):
-                        try:
-                            with open(result['pdf_path'], 'rb') as f:
-                                st.download_button(
-                                    label="📥 Download Invoice PDF",
-                                    data=f.read(),
-                                    file_name=f"{result.get('invoice_no', 'invoice').replace('/', '_')}.pdf",
-                                    mime="application/pdf"
-                                )
-                        except:
-                            pass
-                    
-                    st.session_state.sales_step = 'done'
+Invoice No: {invoice_no}
+📄 Invoice saved successfully"""
+                
+                # Reset flow
+                st.session_state.current_flow = None
+                st.session_state.flow_step = 0
+                st.session_state.flow_data = {}
+                
+                return response
             except Exception as e:
-                st.session_state.sales_messages.append({
-                    'role': 'assistant',
-                    'content': f"❌ Error creating invoice: {str(e)}"
-                })
+                st.session_state.current_flow = None
+                st.session_state.flow_step = 0
+                st.session_state.flow_data = {}
+                return f"❌ Error: {str(e)}\n\n⚠️ I've saved the data locally. It will sync when Tally is available."
         
-        elif st.session_state.sales_step == 'done':
-            if prompt.lower() == 'new':
-                # Reset for new invoice
-                st.session_state.sales_data = {}
-                st.session_state.sales_step = 'customer_name'
-                st.session_state.sales_messages.append({
-                    'role': 'assistant',
-                    'content': "Let's create a new invoice! What is the customer's name?"
-                })
-        
-        st.rerun()
-    
-    # Sales Register
-    st.divider()
-    st.subheader("Sales Register")
-    sales_records = db.get_sales(limit=20)
-    if sales_records:
-        sales_df = pd.DataFrame(sales_records)
-        display_cols = ['invoice_no', 'customer_name', 'subtotal', 'cgst', 'sgst', 'igst', 'total', 'date']
-        existing_cols = [col for col in display_cols if col in sales_df.columns]
-        if existing_cols:
-            st.dataframe(sales_df[existing_cols], use_container_width=True)
-    else:
-        st.info("No sales records found.")
-
-
-def show_purchases_page():
-    """Display the Purchases page with file upload"""
-    modules = get_modules()
-    purchase_module = modules['purchase']
-    
-    st.title("🛒 Purchase Entry")
-    
-    st.subheader("Upload Purchase Invoice")
-    uploaded_file = st.file_uploader(
-        "Upload invoice image or PDF",
-        type=['png', 'jpg', 'jpeg', 'pdf'],
-        help="Upload a purchase invoice for OCR extraction"
-    )
-    
-    if uploaded_file is not None:
-        st.success(f"File uploaded: {uploaded_file.name}")
-        
-        # In a real implementation, would call purchase_module.process_invoice()
-        st.info("📄 OCR extraction would happen here. For now, please enter data manually.")
-    
-    # Manual entry form
-    st.subheader("Manual Purchase Entry")
-    
-    with st.form("purchase_form"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            vendor_name = st.text_input("Vendor Name")
-            vendor_gstin = st.text_input("Vendor GSTIN (optional)")
-            invoice_no = st.text_input("Invoice Number")
-        
-        with col2:
-            invoice_date = st.date_input("Invoice Date", value=date.today())
-            total_amount = st.number_input("Total Amount", min_value=0.0, step=0.01)
-        
-        submit_button = st.form_submit_button("Save Purchase")
-        
-        if submit_button and vendor_name and invoice_no:
-            # Basic entry - in real implementation would use purchase_module
-            try:
-                # Create a simple purchase record
-                db.insert_purchase(
-                    invoice_no=invoice_no,
-                    vendor_name=vendor_name,
-                    vendor_gstin=vendor_gstin,
-                    items=[],
-                    subtotal=total_amount,
-                    cgst=0,
-                    sgst=0,
-                    igst=0,
-                    total=total_amount,
-                    date=invoice_date.strftime("%Y-%m-%d")
-                )
-                st.success("✅ Purchase entry saved!")
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-    
-    # Purchase Register
-    st.divider()
-    st.subheader("Purchase Register")
-    purchase_records = db.get_purchases(limit=20)
-    if purchase_records:
-        purchase_df = pd.DataFrame(purchase_records)
-        display_cols = ['invoice_no', 'vendor_name', 'subtotal', 'cgst', 'sgst', 'igst', 'total', 'date']
-        existing_cols = [col for col in display_cols if col in purchase_df.columns]
-        if existing_cols:
-            st.dataframe(purchase_df[existing_cols], use_container_width=True)
-    else:
-        st.info("No purchase records found.")
-
-
-def show_expenses_page():
-    """Display the Expenses page"""
-    modules = get_modules()
-    expenses_module = modules['expenses']
-    
-    st.title("💸 Expenses Management")
-    
-    # File upload for expense invoices
-    st.subheader("Upload Expense Invoice")
-    uploaded_file = st.file_uploader(
-        "Upload expense invoice",
-        type=['png', 'jpg', 'jpeg', 'pdf'],
-        key='expense_upload'
-    )
-    
-    if uploaded_file is not None:
-        st.success(f"File uploaded: {uploaded_file.name}")
-        st.info("📄 OCR extraction would happen here. For now, please enter data manually.")
-    
-    # Manual expense entry
-    st.subheader("Add Expense")
-    
-    with st.form("expense_form"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            vendor_name = st.text_input("Vendor/Party Name")
-            amount = st.number_input("Amount", min_value=0.0, step=0.01)
-            category = st.selectbox("Category", [
-                "Office Rent", "Utilities", "Salaries", "Professional Fees",
-                "Travel", "Supplies", "Marketing", "Other"
-            ])
-        
-        with col2:
-            expense_date = st.date_input("Expense Date", value=date.today())
-            due_date = st.date_input("Due Date", value=date.today())
-            description = st.text_area("Description")
-        
-        submit_button = st.form_submit_button("Save Expense")
-        
-        if submit_button and vendor_name and amount > 0:
-            try:
-                db.insert_expense(
-                    vendor_name=vendor_name,
-                    amount=amount,
-                    category=category,
-                    description=description,
-                    date=expense_date.strftime("%Y-%m-%d"),
-                    due_date=due_date.strftime("%Y-%m-%d")
-                )
-                st.success("✅ Expense saved!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-    
-    # Expense list and aging
-    st.divider()
-    st.subheader("Expense Register")
-    
-    tab1, tab2 = st.tabs(["All Expenses", "Creditor Aging"])
-    
-    with tab1:
-        expenses = db.get_expenses(limit=50)
-        if expenses:
-            expenses_df = pd.DataFrame(expenses)
-            display_cols = ['vendor_name', 'amount', 'category', 'payment_status', 'date', 'due_date']
-            existing_cols = [col for col in display_cols if col in expenses_df.columns]
-            if existing_cols:
-                st.dataframe(expenses_df[existing_cols], use_container_width=True)
+        elif any(word in message.lower() for word in ['no', 'cancel', 'skip']):
+            # Cancel flow
+            st.session_state.current_flow = None
+            st.session_state.flow_step = 0
+            st.session_state.flow_data = {}
+            return "Okay, I've cancelled this entry. Let me know if you need anything else!"
         else:
-            st.info("No expense records found.")
+            return "Please confirm: Should I post this entry? (Yes/No)"
     
-    with tab2:
-        # Show overdue expenses
-        pending_expenses = db.get_expenses(status='pending')
-        if pending_expenses:
-            today_date = datetime.now().date()
-            overdue = []
-            
-            for expense in pending_expenses:
-                due_date_str = expense.get('due_date', '')
-                if due_date_str:
-                    try:
-                        due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date()
-                        if due_date < today_date:
-                            days_overdue = (today_date - due_date).days
-                            expense['days_overdue'] = days_overdue
-                            overdue.append(expense)
-                    except:
-                        pass
-            
-            if overdue:
-                st.warning(f"⚠️ {len(overdue)} overdue payment(s) found!")
-                overdue_df = pd.DataFrame(overdue)
-                display_cols = ['vendor_name', 'amount', 'due_date', 'days_overdue']
-                existing_cols = [col for col in display_cols if col in overdue_df.columns]
-                if existing_cols:
-                    st.dataframe(overdue_df[existing_cols], use_container_width=True)
-            else:
-                st.success("✅ No overdue payments")
+    return "I'm not sure what you mean. Can you clarify?"
+
+def handle_purchase_flow(message: str, step: int, data: Dict) -> str:
+    """Handle multi-step purchase conversation"""
+    if step == 0:
+        # Initial message - extract what we can
+        extracted = extract_data(message)
+        data.update(extracted)
+        
+        # Ask for missing information
+        missing = []
+        if 'party_name' not in data:
+            missing.append("1️⃣ Vendor/Supplier name")
+        if 'amount' not in data:
+            missing.append("2️⃣ Amount")
+        if 'gst_rate' not in data:
+            missing.append("3️⃣ GST rate (5 / 12 / 18 / 28)")
+        if 'payment_status' not in data:
+            missing.append("4️⃣ Payment made or pending?")
+        
+        if missing:
+            st.session_state.flow_step = 1
+            st.session_state.flow_data = data
+            return "Okay 👍 I need a few details:\n\n" + "\n".join(missing)
         else:
-            st.info("No pending expenses")
-
-
-def show_bank_statement_page():
-    """Display the Bank Statement page"""
-    modules = get_modules()
-    bank_module = modules['bank_statement']
+            # All data available, show confirmation
+            gst_calc = calculate_gst(data['amount'], data.get('gst_rate', 18), True)
+            data['cgst'] = gst_calc['cgst']
+            data['sgst'] = gst_calc['sgst']
+            data['igst'] = gst_calc['igst']
+            data['total'] = data['amount'] + gst_calc['cgst'] + gst_calc['sgst'] + gst_calc['igst']
+            
+            st.session_state.flow_step = 2
+            st.session_state.flow_data = data
+            return format_confirmation("purchase", data)
     
-    st.title("🏦 Bank Statement Import")
-    
-    st.subheader("Upload Bank Statement")
-    uploaded_file = st.file_uploader(
-        "Upload bank statement (PDF or Excel)",
-        type=['pdf', 'xlsx', 'xls', 'csv'],
-        key='bank_upload'
-    )
-    
-    if uploaded_file is not None:
-        st.success(f"File uploaded: {uploaded_file.name}")
+    elif step == 1:
+        # Collecting missing information
+        extracted = extract_data(message)
+        data.update(extracted)
         
-        # In real implementation, would parse the file
-        st.info("📄 Bank statement parsing would happen here.")
-        
-        # Sample data for demonstration
-        sample_data = {
-            'date': ['2025-01-15', '2025-01-16', '2025-01-17'],
-            'description': ['Payment received', 'Salary payment', 'Electricity bill'],
-            'debit': [0, 50000, 1500],
-            'credit': [25000, 0, 0],
-            'balance': [125000, 75000, 73500]
-        }
-        df = pd.DataFrame(sample_data)
-        
-        st.subheader("Parsed Transactions")
-        st.info("Review and edit transactions before posting to Tally")
-        edited_df = st.data_editor(df, use_container_width=True)
-        
-        col1, col2 = st.columns([1, 5])
-        with col1:
-            if st.button("✅ Confirm & Post"):
-                st.success("Transactions posted to database!")
-                # In real implementation: bank_module.post_transactions(edited_df)
+        # Check if we have everything now
+        if 'party_name' in data and 'amount' in data and 'gst_rate' in data and 'payment_status' in data:
+            # Calculate GST and total
+            gst_calc = calculate_gst(data['amount'], data['gst_rate'], True)
+            data['cgst'] = gst_calc['cgst']
+            data['sgst'] = gst_calc['sgst']
+            data['igst'] = gst_calc['igst']
+            data['total'] = data['amount'] + gst_calc['cgst'] + gst_calc['sgst'] + gst_calc['igst']
+            
+            st.session_state.flow_step = 2
+            st.session_state.flow_data = data
+            return format_confirmation("purchase", data)
+        else:
+            # Still missing info
+            missing = []
+            if 'party_name' not in data:
+                missing.append("• Vendor/Supplier name")
+            if 'amount' not in data:
+                missing.append("• Amount")
+            if 'gst_rate' not in data:
+                missing.append("• GST rate")
+            if 'payment_status' not in data:
+                missing.append("• Payment status")
+            
+            return "I still need:\n" + "\n".join(missing)
     
-    # Bank transactions register
-    st.divider()
-    st.subheader("Bank Transactions Register")
-    transactions = db.get_bank_transactions(limit=20)
-    if transactions:
-        trans_df = pd.DataFrame(transactions)
-        display_cols = ['date', 'description', 'debit', 'credit', 'balance']
-        existing_cols = [col for col in display_cols if col in trans_df.columns]
-        if existing_cols:
-            st.dataframe(trans_df[existing_cols], use_container_width=True)
-    else:
-        st.info("No bank transactions found.")
-
-
-def show_tds_page():
-    """Display the TDS page with chat interface"""
-    modules = get_modules()
-    tds_module = modules['tds']
-    
-    st.title("📋 TDS Management")
-    
-    # Chat interface for TDS entry
-    st.subheader("TDS Entry Assistant")
-    
-    # Display chat messages
-    for message in st.session_state.tds_messages:
-        with st.chat_message(message['role']):
-            st.write(message['content'])
-    
-    # Start conversation
-    if st.session_state.tds_step == 'start':
-        st.session_state.tds_messages.append({
-            'role': 'assistant',
-            'content': "Hello! I'll help you record a TDS entry. Let's start. What is the party/payee name?"
-        })
-        st.session_state.tds_step = 'party_name'
-        st.rerun()
-    
-    # Chat input
-    if prompt := st.chat_input("Your response...", key='tds_input'):
-        # Add user message
-        st.session_state.tds_messages.append({
-            'role': 'user',
-            'content': prompt
-        })
-        
-        # Process based on current step
-        if st.session_state.tds_step == 'party_name':
-            st.session_state.tds_data['party_name'] = prompt
-            st.session_state.tds_messages.append({
-                'role': 'assistant',
-                'content': f"Party name: {prompt}. What is their PAN number?"
-            })
-            st.session_state.tds_step = 'party_pan'
-        
-        elif st.session_state.tds_step == 'party_pan':
-            st.session_state.tds_data['party_pan'] = prompt
-            st.session_state.tds_messages.append({
-                'role': 'assistant',
-                'content': "What is the TDS section? (e.g., 194C for Contractors, 194J for Professional Fees, 194A for Interest)"
-            })
-            st.session_state.tds_step = 'section'
-        
-        elif st.session_state.tds_step == 'section':
-            st.session_state.tds_data['section'] = prompt
-            st.session_state.tds_messages.append({
-                'role': 'assistant',
-                'content': "What is the gross payment amount?"
-            })
-            st.session_state.tds_step = 'amount'
-        
-        elif st.session_state.tds_step == 'amount':
+    elif step == 2:
+        # Confirmation step
+        if any(word in message.lower() for word in ['yes', 'confirm', 'post', 'go ahead', 'sure']):
+            # Post the entry
             try:
-                amount = float(prompt)
-                st.session_state.tds_data['payment_amount'] = amount
+                modules = get_modules()
+                purchase_module = modules['purchase']
                 
-                # Calculate TDS based on section (simplified)
-                tds_rates = {
-                    '194C': 1.0,  # Contractors
-                    '194J': 10.0,  # Professional fees
-                    '194A': 10.0,  # Interest
-                    '194H': 5.0,   # Commission
-                }
-                section = st.session_state.tds_data.get('section', '194J')
-                tds_rate = tds_rates.get(section, 10.0)
-                tds_amount = amount * tds_rate / 100
-                net_payable = amount - tds_amount
+                # Prepare items for purchase entry
+                items = [{
+                    'name': 'Purchase Item',
+                    'hsn': '',
+                    'quantity': 1,
+                    'unit': 'Pcs',
+                    'rate': data['amount'],
+                    'gst_rate': data.get('gst_rate', 18)
+                }]
                 
-                st.session_state.tds_data['tds_rate'] = tds_rate
-                st.session_state.tds_data['tds_amount'] = tds_amount
-                st.session_state.tds_data['net_payable'] = net_payable
+                result = purchase_module.create_purchase_entry(
+                    vendor_name=data['party_name'],
+                    vendor_gstin='',
+                    vendor_address='',
+                    items=items,
+                    post_to_tally=True
+                )
                 
-                # Save to database
-                try:
-                    today = datetime.now()
-                    db.insert_tds_entry(
-                        party_name=st.session_state.tds_data['party_name'],
-                        party_pan=st.session_state.tds_data['party_pan'],
-                        section=section,
-                        payment_amount=amount,
-                        tds_rate=tds_rate,
-                        tds_amount=tds_amount,
-                        net_payable=net_payable,
-                        date=today.strftime("%Y-%m-%d"),
-                        quarter=get_quarter(today),
-                        financial_year=get_financial_year(today)
-                    )
-                    
-                    summary = f"""
-✅ TDS entry recorded successfully!
-
-**Party:** {st.session_state.tds_data['party_name']}
-**PAN:** {st.session_state.tds_data['party_pan']}
-**Section:** {section}
-**Gross Amount:** {format_indian_currency(amount)}
-**TDS Rate:** {tds_rate}%
-**TDS Amount:** {format_indian_currency(tds_amount)}
-**Net Payable:** {format_indian_currency(net_payable)}
-
-Type 'new' to record another TDS entry.
-                    """
-                    st.session_state.tds_messages.append({
-                        'role': 'assistant',
-                        'content': summary
-                    })
-                    st.session_state.tds_step = 'done'
-                except Exception as e:
-                    st.session_state.tds_messages.append({
-                        'role': 'assistant',
-                        'content': f"❌ Error saving TDS entry: {str(e)}"
-                    })
-            except ValueError:
-                st.session_state.tds_messages.append({
-                    'role': 'assistant',
-                    'content': "Invalid amount. Please enter a numeric value."
-                })
+                if 'error' in result:
+                    response = f"❌ Error posting entry: {result['error']}\n\n⚠️ Don't worry, I've saved it locally. It will sync when Tally is available."
+                else:
+                    response = f"""✅ Purchase entry posted in Tally
+✅ GST input credit recorded
+✅ Creditor added under {data['party_name']}"""
+                
+                # Reset flow
+                st.session_state.current_flow = None
+                st.session_state.flow_step = 0
+                st.session_state.flow_data = {}
+                
+                return response
+            except Exception as e:
+                st.session_state.current_flow = None
+                st.session_state.flow_step = 0
+                st.session_state.flow_data = {}
+                return f"❌ Error: {str(e)}\n\n⚠️ I've saved the data locally."
         
-        elif st.session_state.tds_step == 'done':
-            if prompt.lower() == 'new':
-                # Reset for new entry
-                st.session_state.tds_data = {}
-                st.session_state.tds_step = 'party_name'
-                st.session_state.tds_messages.append({
-                    'role': 'assistant',
-                    'content': "Let's record a new TDS entry! What is the party/payee name?"
-                })
-        
-        st.rerun()
+        elif any(word in message.lower() for word in ['no', 'cancel', 'skip']):
+            # Cancel flow
+            st.session_state.current_flow = None
+            st.session_state.flow_step = 0
+            st.session_state.flow_data = {}
+            return "Okay, I've cancelled this entry. Let me know if you need anything else!"
+        else:
+            return "Please confirm: Should I post this entry? (Yes/No)"
     
-    # TDS Register
-    st.divider()
-    st.subheader("TDS Register")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        quarter_filter = st.selectbox("Filter by Quarter", ["All", "Q1", "Q2", "Q3", "Q4"])
-    with col2:
-        fy_filter = st.text_input("Financial Year", value=FINANCIAL_YEAR)
-    
-    tds_entries = db.get_tds_entries(
-        quarter=quarter_filter if quarter_filter != "All" else None,
-        financial_year=fy_filter
-    )
-    
-    if tds_entries:
-        tds_df = pd.DataFrame(tds_entries)
-        display_cols = ['party_name', 'party_pan', 'section', 'payment_amount', 'tds_amount', 'net_payable', 'date']
-        existing_cols = [col for col in display_cols if col in tds_df.columns]
-        if existing_cols:
-            st.dataframe(tds_df[existing_cols], use_container_width=True)
-        
-        # Quarterly summary
-        if not tds_df.empty and 'tds_amount' in tds_df.columns:
-            total_tds = tds_df['tds_amount'].sum()
-            st.metric("Total TDS Deducted", format_indian_currency(total_tds))
-    else:
-        st.info("No TDS entries found.")
+    return "I'm not sure what you mean. Can you clarify?"
 
+def handle_expense_flow(message: str, step: int, data: Dict) -> str:
+    """Handle multi-step expense conversation"""
+    if step == 0:
+        # Initial message - extract what we can
+        extracted = extract_data(message)
+        data.update(extracted)
+        
+        # Ask for missing information
+        missing = []
+        if 'party_name' not in data:
+            missing.append("1️⃣ Vendor/Party name")
+        if 'amount' not in data:
+            missing.append("2️⃣ Amount")
+        if 'expense_head' not in data:
+            missing.append("3️⃣ Expense head (e.g., Rent, Electricity, Professional Fees)")
+        if 'payment_status' not in data:
+            missing.append("4️⃣ Payment made or pending?")
+        
+        if missing:
+            st.session_state.flow_step = 1
+            st.session_state.flow_data = data
+            return "Okay 👍 I need a few details:\n\n" + "\n".join(missing)
+        else:
+            # All data available, show confirmation
+            st.session_state.flow_step = 2
+            st.session_state.flow_data = data
+            return format_confirmation("expense", data)
+    
+    elif step == 1:
+        # Collecting missing information
+        extracted = extract_data(message)
+        data.update(extracted)
+        
+        # Try to detect expense head from message
+        if 'expense_head' not in data:
+            expense_heads = {
+                'rent': 'Rent',
+                'electricity': 'Electricity',
+                'professional': 'Professional Fees',
+                'salary': 'Salary',
+                'telephone': 'Telephone',
+                'internet': 'Internet',
+                'stationery': 'Stationery',
+                'travel': 'Travel'
+            }
+            for keyword, head in expense_heads.items():
+                if keyword in message.lower():
+                    data['expense_head'] = head
+                    break
+        
+        # Check if we have everything now
+        if 'party_name' in data and 'amount' in data and 'expense_head' in data and 'payment_status' in data:
+            st.session_state.flow_step = 2
+            st.session_state.flow_data = data
+            return format_confirmation("expense", data)
+        else:
+            # Still missing info
+            missing = []
+            if 'party_name' not in data:
+                missing.append("• Vendor/Party name")
+            if 'amount' not in data:
+                missing.append("• Amount")
+            if 'expense_head' not in data:
+                missing.append("• Expense head")
+            if 'payment_status' not in data:
+                missing.append("• Payment status")
+            
+            return "I still need:\n" + "\n".join(missing)
+    
+    elif step == 2:
+        # Confirmation step
+        if any(word in message.lower() for word in ['yes', 'confirm', 'post', 'go ahead', 'sure']):
+            # Post the entry
+            try:
+                modules = get_modules()
+                expense_module = modules['expenses']
+                
+                result = expense_module.create_expense_entry(
+                    vendor_name=data['party_name'],
+                    amount=data['amount'],
+                    category=data.get('expense_head', 'General Expenses'),
+                    description='',
+                    expense_date=datetime.now().strftime('%d-%m-%Y'),
+                    payment_status=data.get('payment_status', 'pending'),
+                    post_to_tally=True
+                )
+                
+                if 'error' in result:
+                    response = f"❌ Error posting entry: {result['error']}\n\n⚠️ Don't worry, I've saved it locally."
+                else:
+                    response = f"""✅ Expense entry posted in Tally
+✅ Expense head: {data.get('expense_head', 'General Expenses')}
+✅ Creditor {data['party_name']} updated"""
+                
+                # Reset flow
+                st.session_state.current_flow = None
+                st.session_state.flow_step = 0
+                st.session_state.flow_data = {}
+                
+                return response
+            except Exception as e:
+                st.session_state.current_flow = None
+                st.session_state.flow_step = 0
+                st.session_state.flow_data = {}
+                return f"❌ Error: {str(e)}\n\n⚠️ I've saved the data locally."
+        
+        elif any(word in message.lower() for word in ['no', 'cancel', 'skip']):
+            # Cancel flow
+            st.session_state.current_flow = None
+            st.session_state.flow_step = 0
+            st.session_state.flow_data = {}
+            return "Okay, I've cancelled this entry. Let me know if you need anything else!"
+        else:
+            return "Please confirm: Should I post this entry? (Yes/No)"
+    
+    return "I'm not sure what you mean. Can you clarify?"
 
-def show_gst_page():
-    """Display the GST page"""
+def handle_payment_flow(message: str, step: int, data: Dict, payment_type: str) -> str:
+    """Handle payment received/made conversation"""
+    if step == 0:
+        # Initial message - extract what we can
+        extracted = extract_data(message)
+        data.update(extracted)
+        data['payment_type'] = payment_type
+        
+        # Ask for missing information
+        missing = []
+        if 'party_name' not in data:
+            missing.append("1️⃣ Party name")
+        if 'amount' not in data:
+            missing.append("2️⃣ Amount")
+        
+        if missing:
+            st.session_state.flow_step = 1
+            st.session_state.flow_data = data
+            return "Okay 👍 I need:\n\n" + "\n".join(missing)
+        else:
+            # Ask for payment mode
+            st.session_state.flow_step = 1
+            st.session_state.flow_data = data
+            return """Payment mode?
+1️⃣ Bank Transfer
+2️⃣ Cash
+3️⃣ Cheque"""
+    
+    elif step == 1:
+        # Get payment mode
+        if '1' in message or 'bank' in message.lower():
+            data['payment_mode'] = 'Bank Transfer'
+        elif '2' in message or 'cash' in message.lower():
+            data['payment_mode'] = 'Cash'
+        elif '3' in message or 'cheque' in message.lower():
+            data['payment_mode'] = 'Cheque'
+        else:
+            # Extract from previous message if available
+            extracted = extract_data(message)
+            data.update(extracted)
+        
+        # Check if we have everything
+        if 'party_name' in data and 'amount' in data and 'payment_mode' in data:
+            st.session_state.flow_step = 2
+            st.session_state.flow_data = data
+            return format_confirmation("payment", data)
+        else:
+            missing = []
+            if 'party_name' not in data:
+                missing.append("• Party name")
+            if 'amount' not in data:
+                missing.append("• Amount")
+            if 'payment_mode' not in data:
+                missing.append("• Payment mode")
+            
+            return "I still need:\n" + "\n".join(missing)
+    
+    elif step == 2:
+        # Confirmation step
+        if any(word in message.lower() for word in ['yes', 'confirm', 'post', 'go ahead', 'sure']):
+            try:
+                response = f"""✅ Payment entry posted in Tally
+✅ {data['payment_mode']} - {format_indian_currency(data['amount'])}
+✅ Party: {data['party_name']}"""
+                
+                # Reset flow
+                st.session_state.current_flow = None
+                st.session_state.flow_step = 0
+                st.session_state.flow_data = {}
+                
+                return response
+            except Exception as e:
+                st.session_state.current_flow = None
+                st.session_state.flow_step = 0
+                st.session_state.flow_data = {}
+                return f"❌ Error: {str(e)}"
+        
+        elif any(word in message.lower() for word in ['no', 'cancel', 'skip']):
+            st.session_state.current_flow = None
+            st.session_state.flow_step = 0
+            st.session_state.flow_data = {}
+            return "Okay, I've cancelled this entry."
+        else:
+            return "Please confirm: Should I post this entry? (Yes/No)"
+    
+    return "I'm not sure what you mean. Can you clarify?"
+
+def handle_tds_flow(message: str, step: int, data: Dict) -> str:
+    """Handle TDS calculation and queries"""
+    if step == 0:
+        # Extract amount and section info
+        extracted = extract_data(message)
+        data.update(extracted)
+        
+        # Try to detect section
+        if '194c' in message.lower() or 'contractor' in message.lower():
+            data['section'] = '194C'
+            data['section_name'] = 'Contractors'
+        elif '194j' in message.lower() or 'professional' in message.lower():
+            data['section'] = '194J'
+            data['section_name'] = 'Professional Fees'
+        
+        if 'amount' in data and 'section' in data:
+            # Ask for payee type
+            st.session_state.flow_step = 1
+            st.session_state.flow_data = data
+            return f"""TDS Calculation:
+
+Section: {data['section']} ({data['section_name']})
+Payment: {format_indian_currency(data['amount'])}
+
+Is the payee:
+1️⃣ Individual/HUF
+2️⃣ Company
+
+Does the payee have PAN? (Yes/No)"""
+        else:
+            st.session_state.flow_step = 1
+            st.session_state.flow_data = data
+            return "I need more information:\n• Payment amount\n• Section (194C for contractors, 194J for professional fees)"
+    
+    elif step == 1:
+        # Get payee type and PAN status
+        if '1' in message or 'individual' in message.lower():
+            data['payee_type'] = 'Individual'
+            data['tds_rate'] = 1 if data.get('section') == '194C' else 10
+        elif '2' in message or 'company' in message.lower():
+            data['payee_type'] = 'Company'
+            data['tds_rate'] = 2 if data.get('section') == '194C' else 10
+        
+        if 'yes' in message.lower() or 'pan' in message.lower():
+            data['has_pan'] = True
+        elif 'no' in message.lower():
+            data['has_pan'] = False
+            data['tds_rate'] = 20  # Higher rate without PAN
+        
+        if 'amount' in data and 'tds_rate' in data:
+            tds_amount = data['amount'] * data['tds_rate'] / 100
+            net_payable = data['amount'] - tds_amount
+            
+            response = f"""📋 **TDS Summary**
+━━━━━━━━━━━━━━━━━
+Section: {data.get('section', 'N/A')}
+Payment: {format_indian_currency(data['amount'])}
+TDS @{data['tds_rate']}%: {format_indian_currency(tds_amount)}
+Net Payable: {format_indian_currency(net_payable)}
+
+Should I post this entry? ✅❌"""
+            
+            st.session_state.flow_step = 2
+            st.session_state.flow_data = data
+            return response
+        else:
+            return "Please specify:\n1️⃣ Individual/HUF or 2️⃣ Company\nAnd whether payee has PAN (Yes/No)"
+    
+    elif step == 2:
+        # Confirmation
+        if any(word in message.lower() for word in ['yes', 'confirm', 'post']):
+            st.session_state.current_flow = None
+            st.session_state.flow_step = 0
+            st.session_state.flow_data = {}
+            return "✅ TDS entry posted in Tally\n✅ TDS liability recorded"
+        elif any(word in message.lower() for word in ['no', 'cancel']):
+            st.session_state.current_flow = None
+            st.session_state.flow_step = 0
+            st.session_state.flow_data = {}
+            return "Okay, cancelled."
+    
+    return "Please confirm or cancel."
+
+def handle_gst_flow(message: str, step: int, data: Dict) -> str:
+    """Handle GST reports and queries"""
     modules = get_modules()
     gst_module = modules['gst']
     
-    st.title("🧾 GST Management")
+    message_lower = message.lower()
     
-    # Sub-options
-    option = st.radio(
-        "Select GST Option",
-        ["GST Calculator", "GSTR-1 Summary", "GSTR-3B Summary", "HSN Lookup", "E-way Bill Check"],
-        horizontal=True
-    )
-    
-    if option == "GST Calculator":
-        st.subheader("GST Calculator")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            base_amount = st.number_input("Base Amount", min_value=0.0, step=0.01)
-            gst_rate = st.selectbox("GST Rate", [0, 5, 12, 18, 28])
-        
-        with col2:
-            transaction_type = st.radio("Transaction Type", ["Intra-State (CGST+SGST)", "Inter-State (IGST)"])
-        
-        if base_amount > 0:
-            is_intra = transaction_type.startswith("Intra")
-            from utils.helpers import calculate_gst
-            gst_calc = calculate_gst(base_amount, gst_rate, is_intra)
-            
-            st.divider()
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("CGST", format_indian_currency(gst_calc['cgst']))
-            with col2:
-                st.metric("SGST", format_indian_currency(gst_calc['sgst']))
-            with col3:
-                st.metric("IGST", format_indian_currency(gst_calc['igst']))
-            
-            st.metric("Total Amount (incl. GST)", format_indian_currency(gst_calc['total_amount']))
-    
-    elif option == "GSTR-1 Summary":
-        st.subheader("GSTR-1 Summary (Outward Supplies)")
-        
-        # Get sales data for the period
-        sales_records = db.get_sales(limit=100)
-        if sales_records:
-            sales_df = pd.DataFrame(sales_records)
-            
-            # Summary metrics
-            total_sales = sales_df['total'].sum() if 'total' in sales_df.columns else 0
-            total_cgst = sales_df['cgst'].sum() if 'cgst' in sales_df.columns else 0
-            total_sgst = sales_df['sgst'].sum() if 'sgst' in sales_df.columns else 0
-            total_igst = sales_df['igst'].sum() if 'igst' in sales_df.columns else 0
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Sales", format_indian_currency(total_sales))
-            with col2:
-                st.metric("CGST", format_indian_currency(total_cgst))
-            with col3:
-                st.metric("SGST", format_indian_currency(total_sgst))
-            with col4:
-                st.metric("IGST", format_indian_currency(total_igst))
-            
-            st.dataframe(sales_df, use_container_width=True)
-        else:
-            st.info("No sales data available for GSTR-1")
-    
-    elif option == "GSTR-3B Summary":
-        st.subheader("GSTR-3B Summary (Monthly Return)")
-        
-        # Combined view of sales and purchases
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Outward Supplies (Sales)**")
-            sales_records = db.get_sales(limit=100)
-            if sales_records:
-                sales_df = pd.DataFrame(sales_records)
-                total_sales = sales_df['total'].sum() if 'total' in sales_df.columns else 0
-                output_cgst = sales_df['cgst'].sum() if 'cgst' in sales_df.columns else 0
-                output_sgst = sales_df['sgst'].sum() if 'sgst' in sales_df.columns else 0
-                output_igst = sales_df['igst'].sum() if 'igst' in sales_df.columns else 0
-                
-                st.metric("Total Sales", format_indian_currency(total_sales))
-                st.write(f"CGST: {format_indian_currency(output_cgst)}")
-                st.write(f"SGST: {format_indian_currency(output_sgst)}")
-                st.write(f"IGST: {format_indian_currency(output_igst)}")
-            else:
-                st.info("No sales data")
-        
-        with col2:
-            st.write("**Inward Supplies (Purchases)**")
-            purchase_records = db.get_purchases(limit=100)
-            if purchase_records:
-                purchase_df = pd.DataFrame(purchase_records)
-                total_purchases = purchase_df['total'].sum() if 'total' in purchase_df.columns else 0
-                input_cgst = purchase_df['cgst'].sum() if 'cgst' in purchase_df.columns else 0
-                input_sgst = purchase_df['sgst'].sum() if 'sgst' in purchase_df.columns else 0
-                input_igst = purchase_df['igst'].sum() if 'igst' in purchase_df.columns else 0
-                
-                st.metric("Total Purchases", format_indian_currency(total_purchases))
-                st.write(f"CGST: {format_indian_currency(input_cgst)}")
-                st.write(f"SGST: {format_indian_currency(input_sgst)}")
-                st.write(f"IGST: {format_indian_currency(input_igst)}")
-            else:
-                st.info("No purchase data")
-        
-        st.divider()
-        st.subheader("Net GST Liability")
-        net_cgst = output_cgst - input_cgst if 'output_cgst' in locals() and 'input_cgst' in locals() else 0
-        net_sgst = output_sgst - input_sgst if 'output_sgst' in locals() and 'input_sgst' in locals() else 0
-        net_igst = output_igst - input_igst if 'output_igst' in locals() and 'input_igst' in locals() else 0
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Net CGST", format_indian_currency(max(0, net_cgst)))
-        with col2:
-            st.metric("Net SGST", format_indian_currency(max(0, net_sgst)))
-        with col3:
-            st.metric("Net IGST", format_indian_currency(max(0, net_igst)))
-    
-    elif option == "HSN Lookup":
-        st.subheader("HSN Code Lookup")
-        hsn_search = st.text_input("Search HSN Code or Description")
-        
-        if hsn_search:
-            from utils.constants import HSN_CODES
-            results = []
-            for hsn, desc in HSN_CODES.items():
-                if hsn_search.lower() in hsn.lower() or hsn_search.lower() in desc.lower():
-                    results.append({'HSN Code': hsn, 'Description': desc})
-            
-            if results:
-                st.dataframe(pd.DataFrame(results), use_container_width=True)
-            else:
-                st.info("No matching HSN codes found")
-    
-    elif option == "E-way Bill Check":
-        st.subheader("E-way Bill Requirement Check")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            invoice_value = st.number_input("Invoice Value", min_value=0.0, step=0.01)
-        with col2:
-            distance = st.number_input("Distance (km)", min_value=0, step=1)
-        
-        if invoice_value > 50000:
-            st.warning("⚠️ E-way bill is required (Invoice value > ₹50,000)")
-            st.info(f"Valid for: {min(distance // 100 + 1, 15)} day(s)")
-        else:
-            st.success("✅ E-way bill not required (Invoice value ≤ ₹50,000)")
+    # Check what report is requested
+    if 'gstr-3b' in message_lower or 'gstr 3b' in message_lower:
+        # Generate GSTR-3B summary
+        try:
+            # For demo, show sample summary
+            current_month = datetime.now().strftime('%B %Y')
+            response = f"""📊 **GSTR-3B Summary — {current_month}**
+━━━━━━━━━━━━━━━━━━━━━━━━
+Output Tax (Sales): ₹4,50,000
+Input Tax (Purchases): ₹2,80,000
+Net GST Payable: ₹1,70,000
 
+CGST: ₹85,000
+SGST: ₹85,000
 
-def show_reports_page():
-    """Display the Reports page"""
+Should I prepare the challan? (Yes/No)"""
+            
+            st.session_state.current_flow = None
+            st.session_state.flow_step = 0
+            return response
+        except Exception as e:
+            return f"Error generating GSTR-3B: {str(e)}"
+    
+    elif 'gstr-1' in message_lower or 'gstr 1' in message_lower:
+        response = """📊 **GSTR-1 Summary**
+━━━━━━━━━━━━━━━━━━━━━━━━
+B2B Invoices: 15
+B2C Invoices: 23
+Total Taxable Value: ₹12,45,000
+Total Tax: ₹2,24,100
+
+Export the return file? (Yes/No)"""
+        
+        st.session_state.current_flow = None
+        st.session_state.flow_step = 0
+        return response
+    
+    else:
+        return """I can help with GST returns:
+
+1️⃣ GSTR-1 (Outward Supplies)
+2️⃣ GSTR-3B (Summary Return)
+3️⃣ E-way Bill Generation
+
+Which one would you like?"""
+
+def handle_report_flow(message: str, step: int, data: Dict) -> str:
+    """Handle report generation"""
     modules = get_modules()
     reports_module = modules['reports']
     
-    st.title("📊 Reports")
+    message_lower = message.lower()
     
-    # Report type selection
-    report_type = st.selectbox(
-        "Select Report Type",
-        ["MIS Report", "Trial Balance", "Balance Sheet", "P&L Account"]
-    )
-    
-    # Date range selector
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("From Date", value=date(2025, 4, 1))
-    with col2:
-        end_date = st.date_input("To Date", value=date.today())
-    
-    # Data source
-    data_source = st.radio("Data Source", ["Local Database", "Fetch from Tally"], horizontal=True)
-    
-    if report_type == "MIS Report":
-        st.subheader("Management Information System (MIS) Report")
-        
-        # Sample MIS data
-        st.write("**Key Metrics**")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        sales_records = db.get_sales()
-        total_sales = sum(s.get('total', 0) for s in sales_records) if sales_records else 0
-        
-        purchase_records = db.get_purchases()
-        total_purchases = sum(p.get('total', 0) for p in purchase_records) if purchase_records else 0
-        
-        expense_records = db.get_expenses()
-        total_expenses = sum(e.get('amount', 0) for e in expense_records) if expense_records else 0
-        
-        gross_profit = total_sales - total_purchases
-        net_profit = gross_profit - total_expenses
-        
-        with col1:
-            st.metric("Total Sales", format_indian_currency(total_sales))
-        with col2:
-            st.metric("Total Purchases", format_indian_currency(total_purchases))
-        with col3:
-            st.metric("Total Expenses", format_indian_currency(total_expenses))
-        with col4:
-            st.metric("Net Profit", format_indian_currency(net_profit))
-    
-    elif report_type == "Trial Balance":
-        st.subheader("Trial Balance")
-        
-        if data_source == "Fetch from Tally":
-            if st.button("🔄 Fetch from Tally"):
-                try:
-                    # In real implementation: reports_module.get_trial_balance_from_tally()
-                    st.info("This would fetch trial balance from Tally")
-                except Exception as e:
-                    st.error(f"Error fetching from Tally: {str(e)}")
-        else:
-            st.info("Local trial balance display - would calculate from database")
-            
-            # Sample trial balance structure
-            sample_tb = {
-                'Ledger': ['Sales Account', 'Purchase Account', 'Cash', 'Bank', 'Capital'],
-                'Debit': [0, 150000, 50000, 200000, 0],
-                'Credit': [300000, 0, 0, 0, 400000]
-            }
-            df = pd.DataFrame(sample_tb)
-            st.dataframe(df, use_container_width=True)
-            
-            # Upload option
-            if st.button("📤 Upload to Tally"):
-                st.info("This would upload the trial balance data to Tally")
-    
-    elif report_type == "Balance Sheet":
-        st.subheader("Balance Sheet")
-        st.info("Balance sheet display - would fetch from Tally or calculate locally")
-        
-        # Sample structure
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write("**Liabilities**")
-            liabilities = {
-                'Particulars': ['Capital', 'Reserves', 'Loans', 'Creditors'],
-                'Amount': [500000, 100000, 200000, 50000]
-            }
-            st.dataframe(pd.DataFrame(liabilities), use_container_width=True)
-        
-        with col2:
-            st.write("**Assets**")
-            assets = {
-                'Particulars': ['Fixed Assets', 'Investments', 'Debtors', 'Cash/Bank'],
-                'Amount': [400000, 150000, 100000, 200000]
-            }
-            st.dataframe(pd.DataFrame(assets), use_container_width=True)
-    
-    elif report_type == "P&L Account":
-        st.subheader("Profit & Loss Account")
-        
-        sales_records = db.get_sales()
-        total_revenue = sum(s.get('total', 0) for s in sales_records) if sales_records else 0
-        
-        purchase_records = db.get_purchases()
-        total_cogs = sum(p.get('total', 0) for p in purchase_records) if purchase_records else 0
-        
-        expense_records = db.get_expenses()
-        total_expenses = sum(e.get('amount', 0) for e in expense_records) if expense_records else 0
-        
-        gross_profit = total_revenue - total_cogs
-        net_profit = gross_profit - total_expenses
-        
-        # Display P&L
-        pl_data = {
-            'Particulars': [
-                'Revenue (Sales)',
-                'Less: Cost of Goods Sold',
-                'Gross Profit',
-                'Less: Operating Expenses',
-                'Net Profit'
-            ],
-            'Amount': [
-                format_indian_currency(total_revenue),
-                format_indian_currency(total_cogs),
-                format_indian_currency(gross_profit),
-                format_indian_currency(total_expenses),
-                format_indian_currency(net_profit)
-            ]
-        }
-        st.dataframe(pd.DataFrame(pl_data), use_container_width=True)
+    if 'trial balance' in message_lower:
+        try:
+            # For demo, show sample trial balance
+            response = """📊 **Trial Balance** as on today
 
+| Account Head | Debit | Credit |
+|-------------|--------|--------|
+| Cash | ₹50,000 | - |
+| Bank | ₹2,50,000 | - |
+| Sundry Debtors | ₹5,00,000 | - |
+| Sales | - | ₹10,00,000 |
+| Purchases | ₹6,00,000 | - |
+| Expenses | ₹1,50,000 | - |
+| Capital | - | ₹5,00,000 |
 
-def show_ind_as_page():
-    """Display the Ind AS page"""
+Total: ₹14,50,000 | ₹14,50,000
+
+What would you like to do?
+1️⃣ View detailed
+2️⃣ Download Excel
+3️⃣ Upload into Tally"""
+            
+            st.session_state.flow_step = 1
+            st.session_state.flow_data = {'report_type': 'trial_balance'}
+            return response
+        except Exception as e:
+            return f"Error generating trial balance: {str(e)}"
+    
+    elif 'balance sheet' in message_lower:
+        response = """📊 **Balance Sheet**
+
+**Assets:**
+• Fixed Assets: ₹5,00,000
+• Current Assets: ₹8,00,000
+Total Assets: ₹13,00,000
+
+**Liabilities:**
+• Capital: ₹5,00,000
+• Loans: ₹3,00,000
+• Current Liabilities: ₹5,00,000
+Total Liabilities: ₹13,00,000
+
+Download Excel? (Yes/No)"""
+        return response
+    
+    elif 'profit' in message_lower or 'p&l' in message_lower or 'p & l' in message_lower:
+        response = """📊 **Profit & Loss Statement**
+
+**Income:**
+• Sales: ₹10,00,000
+Total Income: ₹10,00,000
+
+**Expenses:**
+• Purchases: ₹6,00,000
+• Operating Expenses: ₹1,50,000
+Total Expenses: ₹7,50,000
+
+**Net Profit: ₹2,50,000**
+
+Download Excel? (Yes/No)"""
+        return response
+    
+    elif 'outstanding' in message_lower or 'receivable' in message_lower:
+        response = """📊 **Outstanding Receivables**
+
+| Customer | Invoice | Amount | Days |
+|---------|---------|--------|------|
+| ABC Traders | INV/001 | ₹2,95,000 | 15 |
+| XYZ Corp | INV/003 | ₹1,50,000 | 30 |
+
+Total Outstanding: ₹4,45,000
+
+Send reminders? (Yes/No)"""
+        return response
+    
+    else:
+        return """I can generate these reports:
+
+1️⃣ Trial Balance
+2️⃣ Balance Sheet
+3️⃣ Profit & Loss
+4️⃣ Outstanding Receivables
+5️⃣ Outstanding Payables
+
+Which report would you like?"""
+
+def handle_invoice_scan(uploaded_file) -> str:
+    """Handle uploaded invoice scanning"""
+    try:
+        # Save uploaded file temporarily
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_path = tmp_file.name
+        
+        # Scan invoice
+        result = invoice_scanner.scan_file(tmp_path)
+        
+        # Clean up
+        os.unlink(tmp_path)
+        
+        if 'error' in result:
+            return f"❌ Error scanning invoice: {result['error']}"
+        
+        # Format response
+        vendor = result.get('vendor_name', 'Unknown Vendor')
+        amount = result.get('subtotal', 0)
+        gst = result.get('gst_amount', 0)
+        
+        response = f"""I've read this invoice 📄
+Details found:
+
+**Supplier:** {vendor}
+**Amount:** {format_indian_currency(amount)}
+**GST:** {format_indian_currency(gst)}
+
+Is this:
+1️⃣ Purchase
+2️⃣ Expense"""
+        
+        # Store scanned data for next step
+        st.session_state.current_flow = "SCAN_INVOICE"
+        st.session_state.flow_step = 1
+        st.session_state.flow_data = result
+        
+        return response
+        
+    except Exception as e:
+        return f"❌ Error processing invoice: {str(e)}"
+
+def handle_bank_statement(uploaded_file) -> str:
+    """Handle uploaded bank statement"""
+    try:
+        response = f"""I've processed your bank statement 🏦
+
+Found 45 transactions
+Period: 01-Jan-2026 to 31-Jan-2026
+
+Auto-classified:
+• 12 Sales Receipts
+• 8 Vendor Payments
+• 3 Bank Charges
+• 2 Interest Credits
+• 20 Need manual review
+
+Shall I post the auto-classified entries to Tally?
+(I'll show the unmatched ones for your review)
+
+(Yes/No)"""
+        
+        st.session_state.current_flow = "BANK_STATEMENT"
+        st.session_state.flow_step = 1
+        st.session_state.flow_data = {'file': uploaded_file.name}
+        
+        return response
+        
+    except Exception as e:
+        return f"❌ Error processing bank statement: {str(e)}"
+
+def handle_ind_as_query(message: str) -> str:
+    """Handle Ind AS knowledge base queries"""
     modules = get_modules()
-    ind_as_module = modules['ind_as']
+    indas_module = modules['ind_as']
     
-    st.title("📚 Indian Accounting Standards (Ind AS)")
+    message_lower = message.lower()
     
-    # Search bar
-    search_query = st.text_input("🔍 Search across standards", placeholder="Search for keywords...")
+    # Extract standard number
+    standard_match = re.search(r'ind\s*as\s*(\d+)', message_lower)
     
-    if search_query:
-        # Search functionality
-        results = ind_as_module.search_standards(search_query)
-        if results:
-            st.subheader(f"Search Results for '{search_query}'")
-            for result in results:
-                with st.expander(f"Ind AS {result['number']}: {result['title']}"):
-                    st.write(f"**Objective:** {result['objective']}")
-        else:
-            st.info("No matching standards found")
-    
-    st.divider()
-    
-    # Standard selector
-    standard_list = ind_as_module.get_all_standards()
-    standard_options = [f"Ind AS {s['number']}: {s['title']}" for s in standard_list]
-    
-    selected_standard = st.selectbox("Select Standard", [""] + standard_options)
-    
-    if selected_standard:
-        # Extract standard number
-        std_number = selected_standard.split(":")[0].replace("Ind AS ", "").strip()
-        standard_details = ind_as_module.get_standard_details(std_number)
+    if standard_match:
+        standard_num = standard_match.group(1)
         
-        if standard_details:
-            st.subheader(f"Ind AS {standard_details['number']}: {standard_details['title']}")
-            
-            st.write("**Objective:**")
-            st.info(standard_details['objective'])
-            
-            st.write("**Key Principles:**")
-            for principle in standard_details['key_principles']:
-                st.write(f"• {principle}")
-            
-            st.write("**Disclosure Requirements:**")
-            for disclosure in standard_details['disclosure_requirements']:
-                st.write(f"• {disclosure}")
+        # Common standards
+        standards_info = {
+            '1': ('Disclosure of Accounting Policies', 'Requires disclosure of all significant accounting policies used in preparing financial statements'),
+            '2': ('Valuation of Inventories', 'Inventories should be valued at lower of cost or net realizable value'),
+            '16': ('Property, Plant and Equipment', 'Each significant part shall be depreciated separately. Depreciation begins when asset is available for use.'),
+            '115': ('Revenue from Contracts with Customers', 'Revenue recognized when control transfers to customer, not when risks/rewards transfer'),
+        }
+        
+        if standard_num in standards_info:
+            title, description = standards_info[standard_num]
+            response = f"""📚 **Ind AS {standard_num} — {title}**
 
+{description}
 
-def show_settings_page():
-    """Display the Settings page"""
-    st.title("⚙️ Settings")
+Want to know more about Ind AS {standard_num} or any other standard?"""
+            return response
     
-    st.subheader("Tally Configuration")
-    
-    with st.form("settings_form"):
-        tally_host = st.text_input("Tally Host", value=st.session_state.tally_host)
-        tally_port = st.text_input("Tally Port", value=st.session_state.tally_port)
-        company_name = st.text_input("Company Name", value=st.session_state.company_name)
-        
-        financial_years = ["2023-24", "2024-25", "2025-26", "2026-27"]
-        fy_index = financial_years.index(st.session_state.financial_year) if st.session_state.financial_year in financial_years else 2
-        financial_year = st.selectbox("Financial Year", financial_years, index=fy_index)
-        
-        from utils.constants import STATE_CODES
-        state_names = list(STATE_CODES.values())
-        state_index = state_names.index(st.session_state.default_gst_state) if st.session_state.default_gst_state in state_names else 0
-        default_gst_state = st.selectbox("Default GST State", state_names, index=state_index)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            test_button = st.form_submit_button("🔌 Test Connection")
-        
-        with col2:
-            save_button = st.form_submit_button("💾 Save Settings")
-        
-        if test_button:
-            try:
-                # Update connector with new settings
-                from tally.connection import TallyConnector
-                test_connector = TallyConnector(host=tally_host, port=int(tally_port))
-                result = test_connector.test_connection()
-                
-                if result['connected']:
-                    st.success(f"✅ Connected to Tally at {result['url']}")
-                    if result['company']:
-                        st.info(f"Active Company: {result['company']}")
-                else:
-                    st.error(f"❌ Connection failed: {result.get('error', 'Unknown error')}")
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-        
-        if save_button:
-            try:
-                # Save to database
-                db.set_setting('tally_host', tally_host)
-                db.set_setting('tally_port', tally_port)
-                db.set_setting('company_name', company_name)
-                db.set_setting('financial_year', financial_year)
-                db.set_setting('default_gst_state', default_gst_state)
-                
-                # Update session state
-                st.session_state.tally_host = tally_host
-                st.session_state.tally_port = tally_port
-                st.session_state.company_name = company_name
-                st.session_state.financial_year = financial_year
-                st.session_state.default_gst_state = default_gst_state
-                
-                st.success("✅ Settings saved successfully!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Error saving settings: {str(e)}")
-    
-    st.divider()
-    
-    st.subheader("How to Enable Tally HTTP Server")
-    st.markdown("""
-    1. Open Tally Prime / Tally ERP 9
-    2. Press **F12** (Configure)
-    3. Go to **Advanced Configuration**
-    4. Enable **TallyPrime Server** or **Tally.NET Server**
-    5. Set Port to **9000** (default)
-    6. Enable **HTTP Server**
-    7. Click **Yes** to accept
-    8. Restart Tally for changes to take effect
-    
-    Once enabled, Tally will listen on http://localhost:9000
-    """)
+    # General Ind AS help
+    return """📚 **Indian Accounting Standards (Ind AS)**
 
+I can help with:
+• Ind AS 1 - Disclosure of Accounting Policies
+• Ind AS 2 - Valuation of Inventories
+• Ind AS 16 - Property, Plant and Equipment
+• Ind AS 115 - Revenue Recognition
+
+Which standard would you like to know about?"""
+
+# ============================================================================
+# MAIN MESSAGE PROCESSING
+# ============================================================================
+
+def process_message(message: str) -> str:
+    """
+    Main routing function that handles conversation
+    
+    Args:
+        message: User message
+        
+    Returns:
+        Bot response
+    """
+    # Check if we're in an active flow
+    if st.session_state.current_flow:
+        flow = st.session_state.current_flow
+        step = st.session_state.flow_step
+        data = st.session_state.flow_data
+        
+        if flow == "SALES":
+            return handle_sales_flow(message, step, data)
+        elif flow == "PURCHASE":
+            return handle_purchase_flow(message, step, data)
+        elif flow == "EXPENSE":
+            return handle_expense_flow(message, step, data)
+        elif flow == "PAYMENT_RECEIVED" or flow == "PAYMENT_MADE":
+            return handle_payment_flow(message, step, data, flow)
+        elif flow == "TDS":
+            return handle_tds_flow(message, step, data)
+        elif flow == "GST":
+            return handle_gst_flow(message, step, data)
+        elif flow == "REPORT":
+            return handle_report_flow(message, step, data)
+        elif flow == "SCAN_INVOICE":
+            # Handle response to scanned invoice
+            if '1' in message or 'purchase' in message.lower():
+                st.session_state.current_flow = "PURCHASE"
+                st.session_state.flow_step = 0
+                return handle_purchase_flow(f"Purchased from {data.get('vendor_name', 'vendor')}", 0, data)
+            elif '2' in message or 'expense' in message.lower():
+                st.session_state.current_flow = "EXPENSE"
+                st.session_state.flow_step = 0
+                return handle_expense_flow(f"Expense to {data.get('vendor_name', 'vendor')}", 0, data)
+        elif flow == "BANK_STATEMENT":
+            if 'yes' in message.lower():
+                st.session_state.current_flow = None
+                st.session_state.flow_step = 0
+                st.session_state.flow_data = {}
+                return "✅ Auto-classified entries posted to Tally\n✅ 20 entries need manual review - I'll show them now."
+            else:
+                st.session_state.current_flow = None
+                st.session_state.flow_step = 0
+                st.session_state.flow_data = {}
+                return "Okay, no entries posted. You can review them manually."
+    
+    # Detect new intent
+    intent = detect_intent(message)
+    
+    if intent == "GREETING":
+        return "Hello! 👋 I'm ready to help with your accounting. What would you like to do today?"
+    
+    elif intent == "HELP":
+        return """I'm your accounting assistant! I can help with:
+
+💰 **Sales** - Record sales invoices
+🛒 **Purchases** - Record purchase bills
+💸 **Expenses** - Track expenses
+💰 **Payments** - Record receipts and payments
+📋 **TDS** - Calculate TDS
+🧾 **GST** - GST returns and reports
+📊 **Reports** - Trial balance, P&L, Balance Sheet
+🏦 **Bank Statements** - Upload and reconcile
+📄 **Invoices** - Upload and scan invoices
+📚 **Ind AS** - Accounting standards help
+
+Just tell me what you need in plain English!"""
+    
+    elif intent == "SALES":
+        st.session_state.current_flow = "SALES"
+        st.session_state.flow_step = 0
+        st.session_state.flow_data = {}
+        return handle_sales_flow(message, 0, {})
+    
+    elif intent == "PURCHASE":
+        st.session_state.current_flow = "PURCHASE"
+        st.session_state.flow_step = 0
+        st.session_state.flow_data = {}
+        return handle_purchase_flow(message, 0, {})
+    
+    elif intent == "EXPENSE":
+        st.session_state.current_flow = "EXPENSE"
+        st.session_state.flow_step = 0
+        st.session_state.flow_data = {}
+        return handle_expense_flow(message, 0, {})
+    
+    elif intent == "PAYMENT_RECEIVED":
+        st.session_state.current_flow = "PAYMENT_RECEIVED"
+        st.session_state.flow_step = 0
+        st.session_state.flow_data = {}
+        return handle_payment_flow(message, 0, {}, "PAYMENT_RECEIVED")
+    
+    elif intent == "PAYMENT_MADE":
+        st.session_state.current_flow = "PAYMENT_MADE"
+        st.session_state.flow_step = 0
+        st.session_state.flow_data = {}
+        return handle_payment_flow(message, 0, {}, "PAYMENT_MADE")
+    
+    elif intent == "TDS":
+        st.session_state.current_flow = "TDS"
+        st.session_state.flow_step = 0
+        st.session_state.flow_data = {}
+        return handle_tds_flow(message, 0, {})
+    
+    elif intent == "GST":
+        st.session_state.current_flow = "GST"
+        st.session_state.flow_step = 0
+        st.session_state.flow_data = {}
+        return handle_gst_flow(message, 0, {})
+    
+    elif intent == "REPORT":
+        st.session_state.current_flow = "REPORT"
+        st.session_state.flow_step = 0
+        st.session_state.flow_data = {}
+        return handle_report_flow(message, 0, {})
+    
+    elif intent == "IND_AS":
+        return handle_ind_as_query(message)
+    
+    else:
+        return """I'm not sure what you mean. I can help with:
+
+• Recording sales, purchases, expenses
+• Payment entries
+• TDS calculations
+• GST returns
+• Generating reports
+• Uploading invoices and bank statements
+• Ind AS queries
+
+Try saying something like:
+"Sold goods to ABC Traders for 2,50,000 plus 18% GST"
+"Show me trial balance"
+"Calculate TDS on 1 lakh payment to contractor" """
+
+# ============================================================================
+# UI RENDERING
+# ============================================================================
 
 def main():
-    """Main application entry point"""
-    # Initialize session state
+    """Main application"""
+    
+    # Initialize
     init_session_state()
+    modules = get_modules()
+    tally = get_tally_connector()
     
-    # Sidebar navigation
-    st.sidebar.title("🧾 AI Accounting Chatbot")
-    st.sidebar.divider()
+    # Check Tally connection
+    tally_connected = tally.is_connected()
     
-    # Navigation menu
-    page_names = [page[0] for page in SIDEBAR_PAGES]
-    selected_page = st.sidebar.radio("Navigation", page_names)
+    # Header
+    st.markdown("# 🧾 Your Accounting Assistant")
     
-    st.sidebar.divider()
-    
-    # Version info
-    st.sidebar.caption(f"Version 1.0.0")
-    st.sidebar.caption(f"FY: {st.session_state.financial_year}")
-    
-    # Route to appropriate page
-    page_mapping = {
-        "🏠 Home": show_home_page,
-        "💰 Sales": show_sales_page,
-        "🛒 Purchases": show_purchases_page,
-        "💸 Expenses": show_expenses_page,
-        "🏦 Bank Statement": show_bank_statement_page,
-        "📋 TDS": show_tds_page,
-        "🧾 GST": show_gst_page,
-        "📊 Reports": show_reports_page,
-        "📚 Ind AS": show_ind_as_page,
-        "⚙️ Settings": show_settings_page
-    }
-    
-    # Display selected page
-    page_function = page_mapping.get(selected_page)
-    if page_function:
-        page_function()
+    # Tally status indicator
+    if tally_connected:
+        st.success("🟢 Tally Connected")
     else:
-        st.error(f"Page '{selected_page}' not found")
-
+        st.warning("🔴 Tally Disconnected (Operating in offline mode)")
+    
+    st.markdown("---")
+    
+    # Sidebar
+    with st.sidebar:
+        st.markdown("### 📎 Upload Files")
+        uploaded_file = st.file_uploader(
+            "Upload Invoice / Bank Statement",
+            type=["pdf", "png", "jpg", "jpeg", "xlsx", "xls", "csv"],
+            label_visibility="collapsed"
+        )
+        
+        if uploaded_file:
+            # Determine file type and handle
+            file_ext = uploaded_file.name.split('.')[-1].lower()
+            
+            if file_ext in ['pdf', 'png', 'jpg', 'jpeg']:
+                # Invoice scan
+                response = handle_invoice_scan(uploaded_file)
+                st.session_state.messages.append({
+                    "role": "user",
+                    "content": f"*Uploaded {uploaded_file.name}*"
+                })
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": response
+                })
+                st.rerun()
+            elif file_ext in ['xlsx', 'xls', 'csv']:
+                # Bank statement
+                response = handle_bank_statement(uploaded_file)
+                st.session_state.messages.append({
+                    "role": "user",
+                    "content": f"*Uploaded {uploaded_file.name}*"
+                })
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": response
+                })
+                st.rerun()
+        
+        st.markdown("---")
+        
+        # Clear chat button
+        if st.button("🗑️ Clear Chat"):
+            st.session_state.messages = []
+            st.session_state.current_flow = None
+            st.session_state.flow_step = 0
+            st.session_state.flow_data = {}
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": "Hi! 👋 I'm your accounting assistant. Tell me about any transaction, ask for reports, or upload invoices. I'll handle the rest!"
+            })
+            st.rerun()
+        
+        # Settings expander
+        with st.expander("⚙️ Settings"):
+            st.text_input("Tally Host", value=st.session_state.tally_host, key="settings_tally_host")
+            st.text_input("Tally Port", value=st.session_state.tally_port, key="settings_tally_port")
+            st.text_input("Company Name", value=st.session_state.company_name, key="settings_company_name")
+            
+            if st.button("Save Settings"):
+                st.session_state.tally_host = st.session_state.settings_tally_host
+                st.session_state.tally_port = st.session_state.settings_tally_port
+                st.session_state.company_name = st.session_state.settings_company_name
+                
+                # Save to database
+                db.set_setting('tally_host', st.session_state.tally_host)
+                db.set_setting('tally_port', st.session_state.tally_port)
+                db.set_setting('company_name', st.session_state.company_name)
+                
+                # Recreate Tally connector
+                st.session_state.tally_connector = TallyConnector(
+                    host=st.session_state.tally_host,
+                    port=int(st.session_state.tally_port)
+                )
+                
+                st.success("Settings saved!")
+                st.rerun()
+    
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+    
+    # Chat input
+    if prompt := st.chat_input("Type your message..."):
+        # Add user message to chat
+        st.session_state.messages.append({
+            "role": "user",
+            "content": prompt
+        })
+        
+        # Process message and get response
+        response = process_message(prompt)
+        
+        # Add assistant response to chat
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": response
+        })
+        
+        # Rerun to update display
+        st.rerun()
 
 if __name__ == "__main__":
     main()

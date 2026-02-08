@@ -48,3 +48,5 @@ generated_invoices/
 
 # Streamlit
 .streamlit/
+app_backup.py
+app_old.py
