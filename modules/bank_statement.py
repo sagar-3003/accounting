@@ -17,6 +17,7 @@ from utils.helpers import (
     format_date_indian,
     parse_date
 )
+import config
 
 
 class BankStatementModule:
@@ -336,6 +337,10 @@ class BankStatementModule:
         Returns:
             Dict with status
         """
+        # Check if Tally is enabled
+        if not config.TALLY_ENABLED:
+            return {"error": "Tally integration is disabled. Operating in local SQLite mode."}
+        
         try:
             # Get transaction details
             self.db.cursor.execute(
