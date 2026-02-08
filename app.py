@@ -408,14 +408,14 @@ def handle_sales_flow(message: str, step: int, data: Dict) -> str:
                     customer_address='',
                     items=items,
                     generate_pdf=True,
-                    post_to_tally=True
+                    post_to_tally=False  # Offline mode - no Tally posting
                 )
                 
                 if 'error' in result:
-                    response = f"❌ Error posting entry: {result['error']}\n\n⚠️ Don't worry, I've saved it locally. It will sync when Tally is available."
+                    response = f"❌ Error saving entry: {result['error']}"
                 else:
                     invoice_no = result.get('invoice_no', 'N/A')
-                    response = f"""✅ Sales voucher posted in Tally
+                    response = f"""✅ Sales entry saved
 ✅ GST invoice generated
 ✅ Outstanding added under {data['party_name']}
 
@@ -533,13 +533,13 @@ def handle_purchase_flow(message: str, step: int, data: Dict) -> str:
                     vendor_gstin='',
                     vendor_address='',
                     items=items,
-                    post_to_tally=True
+                    post_to_tally=False  # Offline mode - no Tally posting
                 )
                 
                 if 'error' in result:
-                    response = f"❌ Error posting entry: {result['error']}\n\n⚠️ Don't worry, I've saved it locally. It will sync when Tally is available."
+                    response = f"❌ Error saving entry: {result['error']}"
                 else:
-                    response = f"""✅ Purchase entry posted in Tally
+                    response = f"""✅ Purchase entry saved
 ✅ GST input credit recorded
 ✅ Creditor added under {data['party_name']}"""
                 
@@ -643,22 +643,21 @@ def handle_expense_flow(message: str, step: int, data: Dict) -> str:
                 modules = get_modules()
                 expense_module = modules['expenses']
                 
-                result = expense_module.create_expense_entry(
+                result = expense_module.create_expense(
                     vendor_name=data['party_name'],
                     amount=data['amount'],
                     category=data.get('expense_head', 'General Expenses'),
                     description='',
                     expense_date=datetime.now().strftime('%d-%m-%Y'),
-                    payment_status=data.get('payment_status', 'pending'),
-                    post_to_tally=True
+                    post_to_tally=False  # Offline mode - no Tally posting
                 )
                 
                 if 'error' in result:
-                    response = f"❌ Error posting entry: {result['error']}\n\n⚠️ Don't worry, I've saved it locally."
+                    response = f"❌ Error saving entry: {result['error']}"
                 else:
-                    response = f"""✅ Expense entry posted in Tally
+                    response = f"""✅ Expense entry saved
 ✅ Expense head: {data.get('expense_head', 'General Expenses')}
-✅ Creditor {data['party_name']} updated"""
+✅ Creditor {data['party_name']} added to records"""
                 
                 # Reset flow
                 st.session_state.current_flow = None
@@ -1270,19 +1269,12 @@ def main():
     # Initialize
     init_session_state()
     modules = get_modules()
-    tally = get_tally_connector()
-    
-    # Check Tally connection
-    tally_connected = tally.is_connected()
     
     # Header
     st.markdown("# 🧾 Your Accounting Assistant")
     
-    # Tally status indicator
-    if tally_connected:
-        st.success("🟢 Tally Connected")
-    else:
-        st.warning("🔴 Tally Disconnected (Operating in offline mode)")
+    # Show local mode indicator
+    st.info("📦 Local Mode - All data stored in SQLite database")
     
     st.markdown("---")
     
@@ -1340,25 +1332,19 @@ def main():
         
         # Settings expander
         with st.expander("⚙️ Settings"):
-            st.text_input("Tally Host", value=st.session_state.tally_host, key="settings_tally_host")
-            st.text_input("Tally Port", value=st.session_state.tally_port, key="settings_tally_port")
             st.text_input("Company Name", value=st.session_state.company_name, key="settings_company_name")
             
+            st.markdown("---")
+            st.markdown("**Tally Integration** *(Coming soon)*")
+            st.text_input("Tally Host", value=st.session_state.tally_host, key="settings_tally_host", disabled=True)
+            st.text_input("Tally Port", value=st.session_state.tally_port, key="settings_tally_port", disabled=True)
+            st.caption("ℹ️ Currently operating in local SQLite mode. Tally integration will be available in a future update.")
+            
             if st.button("Save Settings"):
-                st.session_state.tally_host = st.session_state.settings_tally_host
-                st.session_state.tally_port = st.session_state.settings_tally_port
                 st.session_state.company_name = st.session_state.settings_company_name
                 
                 # Save to database
-                db.set_setting('tally_host', st.session_state.tally_host)
-                db.set_setting('tally_port', st.session_state.tally_port)
                 db.set_setting('company_name', st.session_state.company_name)
-                
-                # Recreate Tally connector
-                st.session_state.tally_connector = TallyConnector(
-                    host=st.session_state.tally_host,
-                    port=int(st.session_state.tally_port)
-                )
                 
                 st.success("Settings saved!")
                 st.rerun()

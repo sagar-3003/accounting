@@ -16,6 +16,7 @@ DATABASE_PATH = os.path.join(BASE_DIR, "accounting.db")
 TALLY_HOST = "localhost"
 TALLY_PORT = 9000
 TALLY_TIMEOUT = 30  # seconds
+TALLY_ENABLED = False  # Set to False for offline mode (local SQLite only)
 
 # Application settings
 APP_NAME = "AI Accounting Chatbot"
